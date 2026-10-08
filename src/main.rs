@@ -19,13 +19,13 @@ use crate::db::Db;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
+    // Initialize tracing — log to stderr so stdout stays clean for JSON-RPC
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "mimir=debug,tower_http=debug,axum::rejection=trace".into()),
         )
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
 
     tracing::info!("🧠 Mímir starting...");

@@ -82,6 +82,9 @@ pub struct RecallInput {
     /// Bank to search (default: agent's default bank)
     #[serde(default)]
     pub bank: Option<String>,
+    /// Agent ID (default: "default")
+    #[serde(default)]
+    pub agent: Option<String>,
     /// Maximum results (default: 10)
     #[serde(default)]
     pub limit: Option<usize>,
@@ -94,6 +97,9 @@ pub struct ReflectInput {
     /// Bank to reflect on (default: agent's default bank)
     #[serde(default)]
     pub bank: Option<String>,
+    /// Agent ID (default: "default")
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -257,7 +263,11 @@ impl MimirServer {
         &self,
         #[tool(aggr)] input: RecallInput,
     ) -> Result<Content, String> {
-        let bank_name = input.bank.unwrap_or_else(|| "default_bank".to_string());
+        let agent_id = input.agent.clone().unwrap_or_else(|| "default".to_string());
+        let bank_name = input
+            .bank
+            .clone()
+            .unwrap_or_else(|| format!("{}_bank", agent_id));
         let limit = input.limit.unwrap_or(10);
 
         let bank = self
@@ -265,6 +275,19 @@ impl MimirServer {
             .get_bank_by_name(&bank_name)
             .map_err(|e| format!("failed to lookup bank: {}", e))?
             .ok_or_else(|| format!("bank not found: {}", bank_name))?;
+
+        // Check read permission
+        let can_read = self
+            .db
+            .can_read(&agent_id, &bank.id)
+            .map_err(|e| format!("permission check failed: {}", e))?;
+
+        if !can_read {
+            return Err(format!(
+                "agent '{}' does not have read permission for bank '{}'",
+                agent_id, bank.name
+            ));
+        }
 
         let memories = self
             .db
@@ -304,13 +327,30 @@ impl MimirServer {
         &self,
         #[tool(aggr)] input: ReflectInput,
     ) -> Result<Content, String> {
-        let bank_name = input.bank.unwrap_or_else(|| "default_bank".to_string());
+        let agent_id = input.agent.clone().unwrap_or_else(|| "default".to_string());
+        let bank_name = input
+            .bank
+            .clone()
+            .unwrap_or_else(|| format!("{}_bank", agent_id));
 
         let bank = self
             .db
             .get_bank_by_name(&bank_name)
             .map_err(|e| format!("failed to lookup bank: {}", e))?
             .ok_or_else(|| format!("bank not found: {}", bank_name))?;
+
+        // Check read permission
+        let can_read = self
+            .db
+            .can_read(&agent_id, &bank.id)
+            .map_err(|e| format!("permission check failed: {}", e))?;
+
+        if !can_read {
+            return Err(format!(
+                "agent '{}' does not have read permission for bank '{}'",
+                agent_id, bank.name
+            ));
+        }
 
         // Get all memories for reflection
         let memories = self
@@ -425,30 +465,45 @@ impl MimirServer {
     }
 }
 
-// Build the tool box manually
+// Build the tool box manually with explicit initialization
 fn mimir_tool_box() -> &'static ToolBox<MimirServer> {
     use rmcp::handler::server::tool::ToolBoxItem;
     use std::sync::OnceLock;
 
     static TOOL_BOX: OnceLock<ToolBox<MimirServer>> = OnceLock::new();
     TOOL_BOX.get_or_init(|| {
+        tracing::info!("initializing Mímir tool box");
         let mut tb = ToolBox::new();
+        
+        let retain_attr = MimirServer::mimir_retain_tool_attr();
+        tracing::info!(tool = %retain_attr.name, "registering tool");
         tb.add(ToolBoxItem::new(
-            MimirServer::mimir_retain_tool_attr(),
+            retain_attr,
             |ctx| Box::pin(MimirServer::mimir_retain_tool_call(ctx)),
         ));
+        
+        let recall_attr = MimirServer::mimir_recall_tool_attr();
+        tracing::info!(tool = %recall_attr.name, "registering tool");
         tb.add(ToolBoxItem::new(
-            MimirServer::mimir_recall_tool_attr(),
+            recall_attr,
             |ctx| Box::pin(MimirServer::mimir_recall_tool_call(ctx)),
         ));
+        
+        let reflect_attr = MimirServer::mimir_reflect_tool_attr();
+        tracing::info!(tool = %reflect_attr.name, "registering tool");
         tb.add(ToolBoxItem::new(
-            MimirServer::mimir_reflect_tool_attr(),
+            reflect_attr,
             |ctx| Box::pin(MimirServer::mimir_reflect_tool_call(ctx)),
         ));
+        
+        let ask_attr = MimirServer::mimir_ask_tool_attr();
+        tracing::info!(tool = %ask_attr.name, "registering tool");
         tb.add(ToolBoxItem::new(
-            MimirServer::mimir_ask_tool_attr(),
+            ask_attr,
             |ctx| Box::pin(MimirServer::mimir_ask_tool_call(ctx)),
         ));
+        
+        tracing::info!(tool_count = tb.map.len(), "tool box initialized");
         tb
     })
 }
@@ -459,9 +514,11 @@ impl ServerHandler for MimirServer {
         _: PaginatedRequestParam,
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, rmcp::Error> {
+        let tb = mimir_tool_box();
+        tracing::info!(tool_count = tb.map.len(), "list_tools called");
         Ok(ListToolsResult {
             next_cursor: None,
-            tools: mimir_tool_box().list(),
+            tools: tb.list(),
         })
     }
 

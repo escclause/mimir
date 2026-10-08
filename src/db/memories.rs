@@ -7,6 +7,27 @@ use uuid::Uuid;
 
 use super::Db;
 
+/// Sanitize a user query for FTS5 MATCH.
+/// Escapes special characters that would cause FTS5 syntax errors.
+fn sanitize_fts_query(query: &str) -> String {
+    // FTS5 special characters: " * ( ) : ^ { } [ ] AND OR NOT
+    // We wrap each token in double quotes to treat them as literal phrases
+    query
+        .split_whitespace()
+        .map(|token| {
+            // Remove any existing quotes, then wrap in quotes
+            let clean: String = token.chars().filter(|c| *c != '"' && *c != '*').collect();
+            if clean.is_empty() {
+                String::new()
+            } else {
+                format!("\"{}\"", clean)
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
     pub rowid: i64,
@@ -135,6 +156,9 @@ impl Db {
     pub fn recall_memories(&self, bank_id: &str, query: &str, limit: usize) -> Result<Vec<Memory>> {
         let conn = self.conn.lock().unwrap();
 
+        // Sanitize query for FTS5 — escape special characters
+        let sanitized = sanitize_fts_query(query);
+
         // Try FTS first
         let fts_sql = "
             SELECT m.rowid, m.id, m.bank_id, m.content, m.memory_type, m.importance, m.confidence,
@@ -148,7 +172,7 @@ impl Db {
         ";
 
         let mut stmt = conn.prepare(fts_sql)?;
-        let rows = stmt.query_map(params![query, bank_id, limit as i64], Memory::from_row);
+        let rows = stmt.query_map(params![sanitized, bank_id, limit as i64], Memory::from_row);
 
         let mut memories = Vec::new();
         match rows {
