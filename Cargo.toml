@@ -1,0 +1,50 @@
+[package]
+name = "mimir"
+version = "0.1.0"
+edition = "2021"
+description = "Norse-themed agent memory system with day/night cognition"
+license = "MIT"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["macros", "json", "ws"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
+
+# Database
+rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Scheduling
+tokio-cron-scheduler = "0.10"
+
+# ML Runtime (ONNX for Kev, llama.cpp for Qwen)
+ort = { version = "2.0.0-rc.4", features = ["load-dynamic"] }
+ndarray = "0.17"
+tokenizers = "0.15"
+# llama-cpp-2 = "0.1"  # For Qwen night shift
+
+# MCP
+rmcp = { version = "0.1", features = ["server", "macros", "transport-io"] }
+schemars = "0.8"
+
+# Utilities
+anyhow = "1"
+thiserror = "1"
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+config = "0.14"
+dirs = "5"
+
+# Embedded UI
+rust-embed = { version = "8", features = ["axum"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
