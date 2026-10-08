@@ -16,12 +16,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::memories::NewMemory;
 use crate::db::Db;
+use crate::jev::kev::KevEngine;
 use crate::jev::mock::MockEngine;
 use crate::jev::DecisionEngine;
+
+/// Engine kind label used in Jev decision logs.
+#[derive(Debug, Clone, Copy)]
+pub enum EngineKind {
+    Kev,
+    Mock,
+}
+
+impl EngineKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EngineKind::Kev => "kev-0.8b",
+            EngineKind::Mock => "mock",
+        }
+    }
+}
 
 pub struct MimirServer {
     db: Arc<Db>,
     engine: Arc<dyn DecisionEngine>,
+    engine_kind: EngineKind,
     peer: Option<Peer<RoleServer>>,
 }
 
@@ -36,6 +54,7 @@ impl Clone for MimirServer {
         Self {
             db: Arc::clone(&self.db),
             engine: Arc::clone(&self.engine),
+            engine_kind: self.engine_kind,
             peer: None,
         }
     }
@@ -89,10 +108,53 @@ pub struct AskInput {
 }
 
 impl MimirServer {
+    /// Create a new MimirServer with the best available decision engine.
+    ///
+    /// Attempts to load Kev-0.8B via ONNX Runtime. If the model files are
+    /// not found or loading fails, falls back to the rule-based MockEngine.
     pub fn new(db: Arc<Db>) -> Self {
+        let config = crate::config::Config::default();
+
+        if KevEngine::model_exists(&config.kev_model_path) {
+            match KevEngine::load(&config.kev_model_path, &config.kev_tokenizer_path) {
+                Ok(kev) => {
+                    tracing::info!("Kev-0.8B ONNX engine loaded successfully");
+                    return Self {
+                        db,
+                        engine: Arc::new(kev),
+                        engine_kind: EngineKind::Kev,
+                        peer: None,
+                    };
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to load Kev engine, falling back to MockEngine"
+                    );
+                }
+            }
+        } else {
+            tracing::info!(
+                model_path = %config.kev_model_path.display(),
+                "Kev model not found, using MockEngine"
+            );
+        }
+
         Self {
             db,
             engine: Arc::new(MockEngine::new()),
+            engine_kind: EngineKind::Mock,
+            peer: None,
+        }
+    }
+
+    /// Create a MimirServer with an explicit engine (for testing).
+    #[allow(dead_code)]
+    pub fn with_engine(db: Arc<Db>, engine: Arc<dyn DecisionEngine>, kind: EngineKind) -> Self {
+        Self {
+            db,
+            engine,
+            engine_kind: kind,
             peer: None,
         }
     }
@@ -172,7 +234,7 @@ impl MimirServer {
             &input.content,
             classification.memory_type.as_str(),
             Some(classification.confidence),
-            "mock",
+            self.engine_kind.as_str(),
         );
 
         let response = serde_json::json!({

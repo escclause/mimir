@@ -14,6 +14,10 @@ use super::{Classification, Contradiction, DecisionEngine, ImportanceScore, Memo
 /// Uses a small language model to classify memories, score importance,
 /// and detect contradictions. Model is loaded from an ONNX file with
 /// a corresponding tokenizer.
+///
+/// When the model is not fine-tuned for these specific tasks, heuristics
+/// are used as fallbacks — the model inference runs but output decoding
+/// is placeholder until fine-tuning is complete.
 pub struct KevEngine {
     session: Mutex<ort::session::Session>,
     tokenizer: Tokenizer,
@@ -39,14 +43,14 @@ impl KevEngine {
             .map_err(|e| anyhow::anyhow!("Failed to load Kev tokenizer: {}", e))?;
 
         // Build ONNX session
-        let mut builder = ort::session::Session::builder()
+        let builder = ort::session::Session::builder()
             .map_err(|e| anyhow::anyhow!("Failed to create ONNX session builder: {}", e))?;
 
-        builder = builder
+        let builder = builder
             .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level1)
             .unwrap_or_else(|e| e.recover());
 
-        builder = builder
+        let mut builder = builder
             .with_intra_threads(1)
             .unwrap_or_else(|e| e.recover());
 
@@ -73,7 +77,7 @@ impl KevEngine {
         model_path.as_ref().exists()
     }
 
-    /// Run inference on a prompt, return the raw logits.
+    /// Run inference on a prompt, return the raw logits from the last position.
     fn run_inference(&self, prompt: &str) -> Result<ndarray::ArrayD<f32>> {
         // Tokenize
         let encoding = self
@@ -89,7 +93,7 @@ impl KevEngine {
         // Create attention mask (all 1s for our use case)
         let attention_mask: Vec<i64> = vec![1; seq_len];
 
-        // Build tensors
+        // Build tensors — ort 2.0 API: Tensor::from_array takes (shape, data)
         let input_tensor = ort::value::Tensor::from_array((
             [1usize, seq_len],
             input_ids.into_boxed_slice(),
@@ -115,14 +119,14 @@ impl KevEngine {
             ])
             .map_err(|e| anyhow::anyhow!("ONNX inference failed: {}", e))?;
 
-        // Extract logits — take the last position's output
+        // Extract logits — ort 2.0 API: try_extract_array returns ArrayViewD
         let output_value = &outputs[0];
-        let (shape, data) = output_value
-            .try_extract_tensor::<f32>()
+        let logits_view = output_value
+            .try_extract_array::<f32>()
             .map_err(|e| anyhow::anyhow!("Failed to extract output tensor: {}", e))?;
 
-        let logits = ndarray::ArrayD::from_shape_vec(shape.to_ixdyn(), data.to_vec())
-            .map_err(|e| anyhow::anyhow!("Failed to reshape logits: {}", e))?;
+        // Clone to owned ArrayD
+        let logits = logits_view.to_owned();
 
         Ok(logits)
     }

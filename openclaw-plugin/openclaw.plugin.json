@@ -1,0 +1,57 @@
+{
+  "id": "mimir",
+  "categories": ["memory", "tools"],
+  "activation": {
+    "onStartup": false
+  },
+  "uiHints": {
+    "mimir.binaryPath": {
+      "label": "Mímir Binary Path",
+      "help": "Path to the Mímir binary. Defaults to ~/.mimir/bin/mimir or the system PATH."
+    },
+    "mimir.databasePath": {
+      "label": "Database Path",
+      "help": "Path to the Mímir SQLite database. Defaults to ~/.mimir/mimir.db."
+    },
+    "mimir.defaultBank": {
+      "label": "Default Bank",
+      "help": "Default memory bank to use when none is specified."
+    },
+    "mimir.defaultAgent": {
+      "label": "Default Agent",
+      "help": "Default agent ID to use when none is specified."
+    }
+  },
+  "configGroups": [
+    {
+      "id": "mimir",
+      "title": "Mímir Memory",
+      "order": 10,
+      "properties": ["mimir"]
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mimir": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "binaryPath": {
+            "type": "string"
+          },
+          "databasePath": {
+            "type": "string"
+          },
+          "defaultBank": {
+            "type": "string"
+          },
+          "defaultAgent": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

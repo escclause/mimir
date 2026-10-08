@@ -1,0 +1,55 @@
+{
+  "name": "@openclaw/mimir-plugin",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin for Mímir - Norse-themed agent memory system with day/night cognition",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "install": {
+      "clawhubSpec": "clawhub:@openclaw/mimir-plugin",
+      "npmSpec": "@openclaw/mimir-plugin",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.6.9"
+    },
+    "compat": {
+      "pluginApi": ">=2026.9.7"
+    },
+    "build": {
+      "openclawVersion": "2026.9.7",
+      "bundledDist": false
+    },
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/escclause/mimir"
+  },
+  "files": [
+    "dist/**",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "openclaw": ">=2026.9.7"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "bundledDependencies": [],
+  "devDependencies": {
+    "@sinclair/typebox": "^0.34.52",
+    "@types/node": "^26.6.4",
+    "tsup": "^8.5.1",
+    "typescript": "^7.0.2"
+  },
+  "bundleDependencies": [],
+  "allowScripts": {
+    "esbuild@0.27.7": true
+  }
+}

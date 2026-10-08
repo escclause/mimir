@@ -95,3 +95,40 @@
 | Hardcoded agent_id "default" | Low | Should derive from MCP session context |
 | Bank type hardcoded to "private" | Medium | Need shared bank creation path |
 | Recall stats update on failed query | Low | Minor, cosmetic |
+
+---
+
+## 2026-10-08: Kev-0.8B ONNX Integration
+
+### Completed
+- **KevEngine fully implemented** in `src/jev/kev.rs`
+  - `ort` 2.0.0-rc.13 API compatibility fixed
+  - `Session::builder()` → `commit_from_file()` chain corrected
+  - `Tensor::from_array((shape, data))` for input tensors
+  - `try_extract_array::<f32>()` for output logits extraction
+  - Tokenizer integration via `tokenizers` crate
+  - Heuristic fallbacks for classify / score / contradiction
+- **Engine auto-selection** in `MimirServer::new()`
+  - Detects `~/.mimir/models/kev-0.8b.onnx` + `tokenizer.json`
+  - Loads KevEngine when model present, falls back to MockEngine
+  - `EngineKind` enum tracks which engine is active for Jev logs
+- **Jev decision logging** now records correct engine (`kev-0.8b` vs `mock`)
+
+### API Fixes (ort 2.0.0-rc.13)
+| Old (broken) | New (working) |
+|-------------|---------------|
+| `builder.commit_from_file()` on immutable | `mut builder` required |
+| `try_extract_tensor::<f32>()` → `(shape, data)` | `try_extract_array::<f32>()` → `ArrayViewD` |
+| `Tensor::from_array([shape], data)` | `Tensor::from_array((shape, data))` tuple |
+
+### Build Status
+- `cargo build`: ✅ zero errors
+- `cargo test`: ✅ 6/6 passing
+- Startup smoke test: ✅ detects missing model, falls back to MockEngine
+
+### Next Steps
+1. Download / fine-tune Kev-0.8B ONNX model into `~/.mimir/models/`
+2. Replace heuristic classifiers with actual model output decoding
+3. Night shift Qwen2.5-7B (llama.cpp bindings)
+4. Web UI scaffolding
+5. REST API endpoints
