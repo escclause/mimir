@@ -16,7 +16,13 @@ pub struct Config {
     /// External llama-server URL for D1 (if already running)
     /// If None, Mímir will try to spawn a managed llama-server
     pub d1_server_url: Option<String>,
+    /// Night shift model name
     pub night_model: String,
+    /// Night shift model path (GGUF)
+    pub night_model_path: PathBuf,
+    /// Night shift llama-server port
+    pub night_port: u16,
+    /// Night shift schedule (cron expression)
     pub night_schedule: String,
 }
 
@@ -43,7 +49,12 @@ impl Default for Config {
                 .join("mmproj-d1-omni-600M-Q8_0.gguf"),
             kev_port: 8081,
             d1_server_url: None, // Will try connect, then spawn
-            night_model: "qwen2.5-7b".to_string(),
+            night_model: "lfm2.5-2.6b".to_string(),
+            night_model_path: mimir_dir
+                .join("models")
+                .join("lfm2.5-2.6b")
+                .join("LFM2.5-2.6B-Q4_0.gguf"),
+            night_port: 8082,
             night_schedule: "0 2 * * *".to_string(),
         }
     }
