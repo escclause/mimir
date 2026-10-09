@@ -1,7 +1,11 @@
-// D1 decision engine via llama-server subprocess
+// D1 decision engine via external or managed llama-server
 // Day-shift cognition using Liquid AI's d1-omni-600M
+//
+// Two modes:
+// 1. External mode — connect to existing llama-server URL (production, multi-GPU setups)
+// 2. Managed mode — spawn and manage llama-server subprocess (fresh installs, single machine)
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -11,26 +15,15 @@ use serde::{Deserialize, Serialize};
 
 use super::{Classification, Contradiction, DecisionEngine, ImportanceScore, MemoryType};
 
-/// D1 decision engine running via llama-server subprocess.
-///
-/// Spawns a persistent llama-server process that loads the D1 GGUF model
-/// and serves typed decisions via the /v1/systemone endpoint. Mímir
-/// communicates with the server using HTTP POST requests.
+/// D1 decision engine running via llama-server.
 ///
 /// D1 is a "System One" decision model — it answers named, typed questions
 /// over a state in one forward pass, with no generated tokens. This makes
-/// it ideal for fast, calibrated day-shift memory judgments.
+/// it ideal for fast, calibrated day-shift memory judgments (~56ms on CPU).
 pub struct D1Engine {
-    /// Path to the D1 GGUF model file
-    model_path: PathBuf,
-    /// Path to the multimodal projector (mmproj) file
-    mmproj_path: PathBuf,
-    /// Path to llama-server binary
-    server_binary: PathBuf,
-    /// HTTP port for llama-server
-    port: u16,
-    /// Persistent server process (kept alive for engine lifetime)
-    #[allow(dead_code)]
+    /// HTTP URL for llama-server (e.g., "http://127.0.0.1:8081")
+    server_url: String,
+    /// Managed subprocess (Some if we spawned it, None if external)
     server_process: Arc<Mutex<Option<Child>>>,
     /// HTTP client for API calls
     client: reqwest::blocking::Client,
@@ -62,13 +55,58 @@ struct HealthResponse {
 }
 
 impl D1Engine {
-    /// Start llama-server with the D1 model.
+    /// Connect to an existing llama-server instance.
     ///
-    /// `model_path` — path to D1 GGUF model file
+    /// Use this when:
+    /// - llama-server is already running (systemd service, manual start)
+    /// - D1 is on a different machine (remote URL)
+    /// - You have multiple llama-server instances (multi-GPU setup)
+    ///
+    /// `server_url` — base URL for llama-server (e.g., "http://127.0.0.1:8081")
+    pub fn connect(server_url: impl Into<String>) -> Result<Self> {
+        let server_url = server_url.into();
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {}", e))?;
+
+        // Verify server is reachable
+        let health_url = format!("{}/health", server_url);
+        let response = client
+            .get(&health_url)
+            .send()
+            .map_err(|e| anyhow::anyhow!("Cannot connect to llama-server at {}: {}", server_url, e))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "llama-server at {} returned status {}",
+                server_url,
+                response.status()
+            ));
+        }
+
+        tracing::info!(url = %server_url, "Connected to external D1 llama-server");
+
+        Ok(Self {
+            server_url,
+            server_process: Arc::new(Mutex::new(None)),
+            client,
+        })
+    }
+
+    /// Spawn a managed llama-server subprocess.
+    ///
+    /// Use this for:
+    /// - Fresh installs (Mímir manages everything)
+    /// - Single-machine setups
+    /// - Development and testing
+    ///
+    /// `model_path` — path to D1 GGUF model
     /// `mmproj_path` — path to multimodal projector GGUF
     /// `server_binary` — path to llama-server binary
-    /// `port` — HTTP port for the server (default: 8081)
-    pub fn start(
+    /// `port` — HTTP port to use
+    pub fn spawn(
         model_path: impl AsRef<Path>,
         mmproj_path: impl AsRef<Path>,
         server_binary: impl AsRef<Path>,
@@ -77,13 +115,12 @@ impl D1Engine {
         let model_path = model_path.as_ref().to_path_buf();
         let mmproj_path = mmproj_path.as_ref().to_path_buf();
         let server_binary = server_binary.as_ref().to_path_buf();
+        let server_url = format!("http://127.0.0.1:{}", port);
 
         tracing::info!(
             model = %model_path.display(),
-            mmproj = %mmproj_path.display(),
-            binary = %server_binary.display(),
             port = port,
-            "Starting llama-server for D1"
+            "Spawning managed D1 llama-server"
         );
 
         // Verify files exist
@@ -122,8 +159,8 @@ impl D1Engine {
                 "-ub",
                 "4096",
             ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| anyhow::anyhow!("Failed to spawn llama-server: {}", e))?;
 
@@ -133,34 +170,19 @@ impl D1Engine {
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {}", e))?;
 
-        let health_url = format!("http://127.0.0.1:{}/health", port);
+        let health_url = format!("{}/health", server_url);
         let mut ready = false;
         let mut last_error = String::new();
 
-        for i in 0..60 {
-            // Check if process died
+        for _ in 0..60 {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    // Process exited — capture stderr
-                    let stderr = child
-                        .stderr
-                        .take()
-                        .map(|s| {
-                            std::io::BufRead::lines(std::io::BufReader::new(s))
-                                .take(50)
-                                .map(|l| l.unwrap_or_default())
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        })
-                        .unwrap_or_default();
                     return Err(anyhow::anyhow!(
-                        "llama-server exited during startup (status: {}):\n{}",
-                        status,
-                        stderr
+                        "llama-server exited during startup (status: {})",
+                        status
                     ));
                 }
                 Ok(None) => {
-                    // Still running, check health
                     match client.get(&health_url).send() {
                         Ok(resp) => {
                             if resp.status().is_success() {
@@ -174,13 +196,6 @@ impl D1Engine {
                         }
                         Err(e) => {
                             last_error = e.to_string();
-                            if i % 10 == 0 {
-                                tracing::debug!(
-                                    attempt = i,
-                                    error = %e,
-                                    "Waiting for llama-server..."
-                                );
-                            }
                         }
                     }
                 }
@@ -196,18 +211,15 @@ impl D1Engine {
             let _ = child.kill();
             let _ = child.wait();
             return Err(anyhow::anyhow!(
-                "llama-server failed to become ready within 30 seconds. Last error: {}",
+                "llama-server failed to become ready. Last error: {}",
                 last_error
             ));
         }
 
-        tracing::info!("llama-server ready on port {}", port);
+        tracing::info!(url = %server_url, "Managed D1 llama-server ready");
 
         Ok(Self {
-            model_path,
-            mmproj_path,
-            server_binary,
-            port,
+            server_url,
             server_process: Arc::new(Mutex::new(Some(child))),
             client,
         })
@@ -220,7 +232,7 @@ impl D1Engine {
 
     /// Send a systemone request to llama-server.
     fn systemone(&self, state: &str, questions: serde_json::Value) -> Result<serde_json::Value> {
-        let url = format!("http://127.0.0.1:{}/v1/systemone", self.port);
+        let url = format!("{}/v1/systemone", self.server_url);
 
         let request = SystemOneRequest {
             state: state.to_string(),
@@ -268,7 +280,6 @@ impl D1Engine {
 
         let answers = self.systemone(content, questions)?;
 
-        // Parse the choice answer
         let memory_type_str = answers["memory_type"]["choice"]
             .as_str()
             .unwrap_or("world_fact");
@@ -303,7 +314,6 @@ impl D1Engine {
 
         let answers = self.systemone(content, questions)?;
 
-        // D1 score is 0-4, we map to 1-5
         let score_0_to_4 = answers["importance"]["score"]
             .as_f64()
             .unwrap_or(1.0);
@@ -331,7 +341,6 @@ impl D1Engine {
         let mut max_confidence = 0.0f32;
 
         for (idx, existing_item) in existing.iter().enumerate() {
-            // Combine both statements into a single state
             let state = format!(
                 "Statement A: {}\nStatement B: {}",
                 existing_item, new
@@ -346,12 +355,10 @@ impl D1Engine {
 
             let answers = self.systemone(&state, questions)?;
 
-            // noul gives probability of "yes"
             let contradiction_prob = answers["contradicts"]["noul"]
                 .as_f64()
                 .unwrap_or(0.0) as f32;
 
-            // Threshold: >0.7 means likely contradiction
             if contradiction_prob > 0.7 {
                 conflicting.push(idx.to_string());
                 max_confidence = max_confidence.max(contradiction_prob);
@@ -454,9 +461,9 @@ impl DecisionEngine for D1Engine {
 
 impl Drop for D1Engine {
     fn drop(&mut self) {
-        tracing::info!("Shutting down D1 llama-server");
         if let Ok(mut child_opt) = self.server_process.lock() {
             if let Some(mut child) = child_opt.take() {
+                tracing::info!("Shutting down managed D1 llama-server");
                 let _ = child.kill();
                 let _ = child.wait();
             }

@@ -73,6 +73,8 @@ pub struct MimirServer {
     engine: Arc<dyn DecisionEngine>,
     engine_kind: EngineKind,
     peer: Option<Peer<RoleServer>>,
+    /// Shared engine slot for background D1 upgrade
+    engine_slot: Arc<std::sync::RwLock<(Arc<dyn DecisionEngine>, EngineKind)>>,
 }
 
 impl std::fmt::Debug for MimirServer {
@@ -88,6 +90,7 @@ impl Clone for MimirServer {
             engine: Arc::clone(&self.engine),
             engine_kind: self.engine_kind,
             peer: None,
+            engine_slot: Arc::clone(&self.engine_slot),
         }
     }
 }
@@ -146,30 +149,49 @@ pub struct AskInput {
 }
 
 impl MimirServer {
-    /// Create a new MimirServer with the best available decision engine.
-    ///
-    /// For now, uses MockEngine synchronously to ensure MCP server starts
-    /// immediately. D1 engine support requires external llama-server process
-    /// management which will be added in a future release.
+    /// Create a new MimirServer with MockEngine, then spawn background
+    /// thread to upgrade to D1 engine when ready.
     pub fn new(db: Arc<Db>) -> Self {
         let config = crate::config::Config::default();
+        let mock_engine: Arc<dyn DecisionEngine> = Arc::new(MockEngine::new());
+        let engine_slot = Arc::new(std::sync::RwLock::new((
+            Arc::clone(&mock_engine),
+            EngineKind::Mock,
+        )));
 
-        // Check if D1 model exists and log status
+        // Check if D1 model exists, spawn background upgrade
         if D1Engine::model_exists(&config.kev_model_path, &config.d1_mmproj_path) {
             let server_binary = find_llama_server().unwrap_or_else(|| {
                 PathBuf::from("/home/glitch/llama.cpp-official/build/bin/llama-server")
             });
 
             if server_binary.exists() {
-                tracing::info!(
-                    model = %config.kev_model_path.display(),
-                    "D1 model found but engine not started (requires external llama-server). Using MockEngine."
-                );
+                let engine_slot_clone = Arc::clone(&engine_slot);
+                let model_path = config.kev_model_path.clone();
+                let mmproj_path = config.d1_mmproj_path.clone();
+                let port = config.kev_port;
+
+                std::thread::spawn(move || {
+                    tracing::info!("Background: starting D1 engine...");
+                    match D1Engine::spawn(
+                        &model_path,
+                        &mmproj_path,
+                        &server_binary,
+                        port,
+                    ) {
+                        Ok(d1) => {
+                            tracing::info!("Background: D1 engine ready, upgrading");
+                            if let Ok(mut slot) = engine_slot_clone.write() {
+                                *slot = (Arc::new(d1), EngineKind::D1);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Background: D1 engine failed to start");
+                        }
+                    }
+                });
             } else {
-                tracing::warn!(
-                    binary = %server_binary.display(),
-                    "llama-server not found, using MockEngine"
-                );
+                tracing::warn!("llama-server not found, staying with MockEngine");
             }
         } else {
             tracing::info!("D1 model not found, using MockEngine");
@@ -177,20 +199,26 @@ impl MimirServer {
 
         Self {
             db,
-            engine: Arc::new(MockEngine::new()),
+            engine: mock_engine,
             engine_kind: EngineKind::Mock,
             peer: None,
+            engine_slot,
         }
     }
 
     /// Create a MimirServer with an explicit engine (for testing).
     #[allow(dead_code)]
     pub fn with_engine(db: Arc<Db>, engine: Arc<dyn DecisionEngine>, kind: EngineKind) -> Self {
+        let engine_slot = Arc::new(std::sync::RwLock::new((
+            Arc::clone(&engine),
+            kind,
+        )));
         Self {
             db,
             engine,
             engine_kind: kind,
             peer: None,
+            engine_slot,
         }
     }
 
@@ -233,15 +261,21 @@ impl MimirServer {
             ));
         }
 
+        // Get current engine from slot (may have been upgraded to D1)
+        let (engine, engine_kind) = {
+            match self.engine_slot.read() {
+                Ok(slot) => (Arc::clone(&slot.0), slot.1),
+                Err(_) => (Arc::clone(&self.engine), self.engine_kind),
+            }
+        };
+
         // Classify with Jev
-        let classification = self
-            .engine
+        let classification = engine
             .classify(&input.content)
             .map_err(|e| format!("classification failed: {}", e))?;
 
         // Score importance
-        let importance = self
-            .engine
+        let importance = engine
             .score_importance(&input.content)
             .map_err(|e| format!("importance scoring failed: {}", e))?;
 
@@ -269,7 +303,7 @@ impl MimirServer {
             &input.content,
             classification.memory_type.as_str(),
             Some(classification.confidence),
-            self.engine_kind.as_str(),
+            engine_kind.as_str(),
         );
 
         let response = serde_json::json!({
