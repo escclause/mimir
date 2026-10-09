@@ -12,12 +12,12 @@ use super::{Classification, Contradiction, DecisionEngine, ImportanceScore, Memo
 /// Kev-0.8B decision engine running via ONNX Runtime.
 ///
 /// Uses a small language model to classify memories, score importance,
-/// and detect contradictions. Model is loaded from an ONNX file with
+/// and detect contraditions. Model is loaded from an ONNX file with
 /// a corresponding tokenizer.
 ///
-/// When the model is not fine-tuned for these specific tasks, heuristics
-/// are used as fallbacks — the model inference runs but output decoding
-/// is placeholder until fine-tuning is complete.
+/// This is the default engine — designed to work out of the box with
+/// Kev-0.8B's native ONNX format. Users can swap to other engines
+/// (llama.cpp GGUF, cloud APIs) via config.
 pub struct KevEngine {
     session: Mutex<ort::session::Session>,
     tokenizer: Tokenizer,

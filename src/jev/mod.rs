@@ -1,7 +1,7 @@
 // Jev decision engine
-// Trait + implementations (Kev, mock)
+// Trait + implementations (D1, mock)
 
-pub mod kev;
+pub mod d1;
 pub mod mock;
 
 use anyhow::Result;

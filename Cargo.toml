@@ -23,10 +23,13 @@ serde_json = "1"
 tokio-cron-scheduler = "0.10"
 
 # ML Runtime (ONNX for Kev, llama.cpp for Qwen)
-ort = { version = "2.0.0-rc.4", features = ["load-dynamic"] }
+ort = { version = "2.0.0-rc.4", features = ["download-binaries"] }
 ndarray = "0.17"
 tokenizers = "0.15"
 # llama-cpp-2 = "0.1"  # For Qwen night shift
+
+# HTTP client for llama-server
+reqwest = { version = "0.12", features = ["blocking", "json"] }
 
 # MCP
 rmcp = { version = "0.1", features = ["server", "macros", "transport-io"] }

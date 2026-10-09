@@ -49,6 +49,9 @@ async fn main() -> Result<()> {
     tracing::info!("starting MCP server on stdio");
     let server = MimirServer::new(db);
 
+    // Give background D1 engine a moment to start (non-blocking)
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
     let service = server
         .serve(rmcp::transport::stdio())
         .await

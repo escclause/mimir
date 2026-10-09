@@ -1,6 +1,7 @@
 // MCP server for OpenClaw integration
 // Serves mimir_retain, mimir_recall, mimir_reflect, mimir_ask over stdio
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -16,21 +17,52 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::memories::NewMemory;
 use crate::db::Db;
-use crate::jev::kev::KevEngine;
+use crate::jev::d1::D1Engine;
 use crate::jev::mock::MockEngine;
 use crate::jev::DecisionEngine;
+
+/// Find llama-server binary in common locations.
+/// Prefers official llama.cpp build for D1 model support.
+fn find_llama_server() -> Option<PathBuf> {
+    // Check official build first (required for D1 LFM2.5 architecture)
+    let candidates = [
+        "/home/glitch/llama.cpp-official/build/bin/llama-server",
+        "/home/glitch/llama.cpp-turboquant/build/bin/llama-server",
+        "/usr/local/bin/llama-server",
+        "/usr/bin/llama-server",
+    ];
+
+    for path in &candidates {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // Check PATH
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            let p = PathBuf::from(dir).join("llama-server");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+
+    None
+}
 
 /// Engine kind label used in Jev decision logs.
 #[derive(Debug, Clone, Copy)]
 pub enum EngineKind {
-    Kev,
+    D1,
     Mock,
 }
 
 impl EngineKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            EngineKind::Kev => "kev-0.8b",
+            EngineKind::D1 => "d1-omni-600m",
             EngineKind::Mock => "mock",
         }
     }
@@ -116,34 +148,31 @@ pub struct AskInput {
 impl MimirServer {
     /// Create a new MimirServer with the best available decision engine.
     ///
-    /// Attempts to load Kev-0.8B via ONNX Runtime. If the model files are
-    /// not found or loading fails, falls back to the rule-based MockEngine.
+    /// For now, uses MockEngine synchronously to ensure MCP server starts
+    /// immediately. D1 engine support requires external llama-server process
+    /// management which will be added in a future release.
     pub fn new(db: Arc<Db>) -> Self {
         let config = crate::config::Config::default();
 
-        if KevEngine::model_exists(&config.kev_model_path) {
-            match KevEngine::load(&config.kev_model_path, &config.kev_tokenizer_path) {
-                Ok(kev) => {
-                    tracing::info!("Kev-0.8B ONNX engine loaded successfully");
-                    return Self {
-                        db,
-                        engine: Arc::new(kev),
-                        engine_kind: EngineKind::Kev,
-                        peer: None,
-                    };
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "Failed to load Kev engine, falling back to MockEngine"
-                    );
-                }
+        // Check if D1 model exists and log status
+        if D1Engine::model_exists(&config.kev_model_path, &config.d1_mmproj_path) {
+            let server_binary = find_llama_server().unwrap_or_else(|| {
+                PathBuf::from("/home/glitch/llama.cpp-official/build/bin/llama-server")
+            });
+
+            if server_binary.exists() {
+                tracing::info!(
+                    model = %config.kev_model_path.display(),
+                    "D1 model found but engine not started (requires external llama-server). Using MockEngine."
+                );
+            } else {
+                tracing::warn!(
+                    binary = %server_binary.display(),
+                    "llama-server not found, using MockEngine"
+                );
             }
         } else {
-            tracing::info!(
-                model_path = %config.kev_model_path.display(),
-                "Kev model not found, using MockEngine"
-            );
+            tracing::info!("D1 model not found, using MockEngine");
         }
 
         Self {
