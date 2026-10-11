@@ -511,17 +511,35 @@ impl MimirServer {
 
         let total_memories = memories.len();
 
+        // Generate synthesized answer from relevant memories
+        let answer = if relevant.is_empty() {
+            format!(
+                "No relevant memories found for query '{}' in bank '{}' ({} total memories).",
+                input.query, bank.name, total_memories
+            )
+        } else {
+            // Build context from relevant memories
+            let memory_context: Vec<String> = relevant
+                .iter()
+                .enumerate()
+                .map(|(i, m)| format!("{}. {} (type: {}, importance: {})", i + 1, m.content, m.memory_type, m.importance))
+                .collect();
+
+            format!(
+                "Based on {} relevant memories from bank '{}' ({} total memories):\n\n{}",
+                relevant.len(),
+                bank.name,
+                total_memories,
+                memory_context.join("\n")
+            )
+        };
+
         let response = serde_json::json!({
             "query": input.query,
             "bank": bank.name,
             "total_memories_in_bank": total_memories,
             "relevant_memories": relevant.len(),
-            "answer": format!(
-                "Based on {} relevant memories from bank '{}' ({} total memories):",
-                relevant.len(),
-                bank.name,
-                total_memories
-            ),
+            "answer": answer,
             "sources": sources,
         });
 
