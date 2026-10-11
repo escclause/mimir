@@ -150,6 +150,33 @@ pub fn get_decisions_by_type(
     Ok(decisions)
 }
 
+/// Get recent decisions (all types), for night shift audit.
+pub fn get_recent_decisions(conn: &Connection, limit: usize) -> Result<Vec<JevDecision>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, memory_id, decision_type, input, output, confidence, engine, created_at
+         FROM jev_decisions
+         ORDER BY created_at DESC
+         LIMIT ?1",
+    )?;
+
+    let decisions = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok(JevDecision {
+                id: row.get(0)?,
+                memory_id: row.get(1)?,
+                decision_type: row.get(2)?,
+                input: row.get(3)?,
+                output: row.get(4)?,
+                confidence: row.get(5)?,
+                engine: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(decisions)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -47,7 +47,7 @@ pub struct Memory {
 }
 
 impl Memory {
-    fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
+    pub fn from_row(row: &Row) -> Result<Self, rusqlite::Error> {
         Ok(Self {
             rowid: row.get(0)?,
             id: row.get(1)?,

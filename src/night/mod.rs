@@ -4,3 +4,4 @@
 pub mod audit;
 pub mod consolidate;
 pub mod llm;
+pub mod scheduler;

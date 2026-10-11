@@ -16,6 +16,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::api::mcp::MimirServer;
 use crate::db::Db;
+use crate::night::scheduler::NightScheduler;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -47,10 +48,17 @@ async fn main() -> Result<()> {
 
     // Start MCP server over stdio
     tracing::info!("starting MCP server on stdio");
-    let server = MimirServer::new(db);
+    let server = MimirServer::new(db.clone());
 
     // Give background D1 engine a moment to start (non-blocking)
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Start night shift scheduler (runs consolidation tasks)
+    let config = config::Config::default();
+    let night_scheduler = Arc::new(NightScheduler::new(db.clone(), config.night_schedule.clone()));
+    if let Err(e) = night_scheduler.clone().start().await {
+        tracing::warn!(error = %e, "Failed to start night shift scheduler");
+    }
 
     let service = server
         .serve(rmcp::transport::stdio())

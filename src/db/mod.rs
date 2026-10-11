@@ -7,7 +7,7 @@ pub mod jev_log;
 pub mod memories;
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -115,6 +115,54 @@ impl Db {
             latency_ms: None,
         };
         jev_log::log_decision(&conn, &input)?;
+        Ok(())
+    }
+
+    /// Get recent Jev decisions (for night shift audit).
+    pub fn get_recent_jev_decisions(&self, limit: usize) -> Result<Vec<jev_log::JevDecision>> {
+        let conn = self.conn.lock().unwrap();
+        jev_log::get_recent_decisions(&conn, limit)
+    }
+
+    /// Get memories ready for consolidation (for night shift).
+    /// Returns memories that are observations or experiences with importance >= 2.
+    pub fn get_memories_for_consolidation(&self, limit: usize) -> Result<Vec<memories::Memory>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT rowid, id, bank_id, content, memory_type, importance, confidence,
+                    source_agent, source_context, provenance, created_at, updated_at,
+                    last_recalled_at, recall_count
+             FROM memories
+             WHERE memory_type IN ('observation', 'experience', 'mental_model')
+               AND importance >= 2
+             ORDER BY importance DESC, created_at DESC
+             LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit as i64], memories::Memory::from_row)?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    /// Store a synthesis result (for night shift).
+    pub fn store_synthesis(&self, synthesis: &str, memory_count: usize) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS syntheses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                memory_count INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO syntheses (content, memory_count) VALUES (?1, ?2)",
+            params![synthesis, memory_count as i64],
+        )?;
         Ok(())
     }
 }
