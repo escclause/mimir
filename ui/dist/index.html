@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mímir — Memory Browser</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --text-muted: #8b949e;
+            --accent: #58a6ff;
+            --accent-hover: #79b8ff;
+            --success: #3fb950;
+            --warning: #d29922;
+            --danger: #f85149;
+            --purple: #bc8cff;
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 0;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 24px;
+        }
+        
+        .logo {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--accent);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .logo::before { content: "🧠"; }
+        
+        .status {
+            font-size: 12px;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+        }
+        
+        .status-dot.error { background: var(--danger); }
+        
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .tab {
+            padding: 8px 16px;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 14px;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .tab:hover { color: var(--text); }
+        .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+        
+        /* Search bar */
+        .search-bar {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        
+        .search-input {
+            flex: 1;
+            padding: 10px 16px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 14px;
+        }
+        
+        .search-input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        
+        .btn {
+            padding: 10px 16px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        
+        .btn:hover { background: var(--border); }
+        .btn.primary { background: var(--accent); border-color: var(--accent); color: #000; }
+        .btn.primary:hover { background: var(--accent-hover); }
+        .btn.danger { color: var(--danger); }
+        .btn.danger:hover { background: var(--danger); color: #fff; }
+        .btn.small { padding: 4px 10px; font-size: 12px; }
+        
+        /* Bank selector */
+        .bank-selector {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        
+        .bank-chip {
+            padding: 6px 14px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 13px;
+            color: var(--text-muted);
+            transition: all 0.2s;
+        }
+        
+        .bank-chip:hover { border-color: var(--accent); }
+        .bank-chip.active {
+            background: var(--accent);
+            color: #000;
+            border-color: var(--accent);
+        }
+        
+        .bank-chip.shared { border-color: var(--purple); }
+        .bank-chip.shared.active { background: var(--purple); }
+        
+        /* Memory cards */
+        .memory-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .memory-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            transition: all 0.2s;
+        }
+        
+        .memory-card:hover { border-color: var(--accent); }
+        
+        .memory-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        
+        .memory-meta {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        
+        .memory-type {
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .memory-type.world_fact { background: rgba(88,166,255,0.2); color: var(--accent); }
+        .memory-type.experience { background: rgba(63,185,80,0.2); color: var(--success); }
+        .memory-type.observation { background: rgba(210,153,34,0.2); color: var(--warning); }
+        .memory-type.mental_model { background: rgba(188,140,255,0.2); color: var(--purple); }
+        
+        .memory-importance {
+            color: var(--warning);
+            font-size: 12px;
+        }
+        
+        .memory-content {
+            color: var(--text);
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        
+        .memory-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+        }
+        
+        .memory-stats {
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        
+        .memory-actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-muted);
+        }
+        
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+        
+        /* Add memory form */
+        .add-form {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .form-group {
+            margin-bottom: 16px;
+        }
+        
+        .form-label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        
+        .form-input, .form-textarea {
+            width: 100%;
+            padding: 10px 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 14px;
+        }
+        
+        .form-textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+        
+        .form-row {
+            display: flex;
+            gap: 12px;
+        }
+        
+        .form-row > * { flex: 1; }
+        
+        /* Reflect result */
+        .reflect-result {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 16px;
+        }
+        
+        .reflect-answer {
+            white-space: pre-wrap;
+            font-size: 14px;
+            line-height: 1.7;
+            margin-bottom: 16px;
+        }
+        
+        .reflect-sources {
+            border-top: 1px solid var(--border);
+            padding-top: 12px;
+        }
+        
+        .reflect-sources-title {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+        
+        .source-item {
+            padding: 8px 12px;
+            background: var(--bg);
+            border-radius: 4px;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+        
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-muted);
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        /* Toast notifications */
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 14px;
+            animation: slideIn 0.3s ease;
+            z-index: 1000;
+        }
+        
+        .toast.success { border-color: var(--success); }
+        .toast.error { border-color: var(--danger); }
+        
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        
+        /* Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+        
+        .modal {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 24px;
+            max-width: 500px;
+            width: 90%;
+        }
+        
+        .modal-title {
+            font-size: 18px;
+            margin-bottom: 16px;
+        }
+        
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+        
+        .hidden { display: none !important; }
+        
+        /* Stats bar */
+        .stats-bar {
+            display: flex;
+            gap: 24px;
+            padding: 16px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .stat {
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--accent);
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">Mímir</div>
+            <div class="status">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">Connected</span>
+            </div>
+        </header>
+        
+        <div class="tabs">
+            <button class="tab active" data-tab="browse">Browse</button>
+            <button class="tab" data-tab="search">Search</button>
+            <button class="tab" data-tab="reflect">Reflect</button>
+            <button class="tab" data-tab="add">+ Add Memory</button>
+        </div>
+        
+        <!-- Browse Tab -->
+        <div id="tab-browse" class="tab-content">
+            <div class="stats-bar" id="statsBar">
+                <div class="stat">
+                    <div class="stat-value" id="statTotal">-</div>
+                    <div class="stat-label">Total Memories</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="statBanks">-</div>
+                    <div class="stat-label">Banks</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="statTypes">-</div>
+                    <div class="stat-label">Types</div>
+                </div>
+            </div>
+            
+            <div class="bank-selector" id="bankSelector"></div>
+            <div class="memory-list" id="memoryList"></div>
+            <div class="empty-state hidden" id="emptyState">
+                <div class="empty-state-icon">🧠</div>
+                <p>No memories in this bank yet.</p>
+                <p style="margin-top: 8px; font-size: 13px;">Use the "Add Memory" tab or MCP tools to store memories.</p>
+            </div>
+        </div>
+        
+        <!-- Search Tab -->
+        <div id="tab-search" class="tab-content hidden">
+            <div class="search-bar">
+                <input type="text" class="search-input" id="searchInput" placeholder="Search memories... (e.g., 'vim', 'dark mode', 'preferences')">
+                <button class="btn primary" onclick="performSearch()">Search</button>
+            </div>
+            <div class="memory-list" id="searchResults"></div>
+            <div class="empty-state hidden" id="searchEmpty">
+                <div class="empty-state-icon">🔍</div>
+                <p>No results found. Try different keywords.</p>
+            </div>
+        </div>
+        
+        <!-- Reflect Tab -->
+        <div id="tab-reflect" class="tab-content hidden">
+            <div class="search-bar">
+                <input type="text" class="search-input" id="reflectQuery" placeholder="Ask a question... (e.g., 'What are my preferences?')">
+                <button class="btn primary" onclick="performReflect()">Reflect</button>
+            </div>
+            <div id="reflectResult"></div>
+        </div>
+        
+        <!-- Add Memory Tab -->
+        <div id="tab-add" class="tab-content hidden">
+            <div class="add-form">
+                <div class="form-group">
+                    <label class="form-label">Content</label>
+                    <textarea class="form-textarea" id="addContent" placeholder="What should Mímir remember?"></textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Bank</label>
+                        <select class="form-input" id="addBank"></select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Type (optional)</label>
+                        <select class="form-input" id="addType">
+                            <option value="">Auto-classify</option>
+                            <option value="world_fact">World Fact</option>
+                            <option value="experience">Experience</option>
+                            <option value="observation">Observation</option>
+                            <option value="mental_model">Mental Model</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Context (optional)</label>
+                    <input type="text" class="form-input" id="addContext" placeholder="Where did this come from?">
+                </div>
+                <button class="btn primary" onclick="addMemory()">Store Memory</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Delete Confirmation Modal -->
+    <div class="modal-overlay hidden" id="deleteModal">
+        <div class="modal">
+            <div class="modal-title">Delete Memory?</div>
+            <p style="color: var(--text-muted); font-size: 14px;">This will permanently remove this memory from Mímir.</p>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeDeleteModal()">Cancel</button>
+                <button class="btn danger" onclick="confirmDelete()">Delete</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // State
+        let currentBank = null;
+        let banks = [];
+        let memories = [];
+        let deleteTargetId = null;
+        
+        // API base (same origin)
+        const API = '';
+        
+        // Initialize
+        async function init() {
+            await loadBanks();
+            await loadStats();
+            switchTab('browse');
+        }
+        
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+        });
+        
+        function switchTab(name) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+            document.getElementById('tab-' + name).classList.remove('hidden');
+            
+            if (name === 'browse') loadMemories();
+            if (name === 'add') loadBankOptions();
+        }
+        
+        // Load banks
+        async function loadBanks() {
+            try {
+                const res = await fetch(API + '/banks');
+                const data = await res.json();
+                banks = data.banks;
+                
+                // Render bank chips
+                const selector = document.getElementById('bankSelector');
+                selector.innerHTML = banks.map(b => `
+                    <div class="bank-chip ${b.bank_type === 'shared' ? 'shared' : ''} ${b.name === currentBank ? 'active' : ''}" 
+                         onclick="selectBank('${b.name}')">
+                        ${b.name}
+                    </div>
+                `).join('');
+                
+                // Select first bank if none selected
+                if (!currentBank && banks.length > 0) {
+                    selectBank(banks[0].name);
+                }
+            } catch (e) {
+                showError('Failed to load banks');
+            }
+        }
+        
+        function selectBank(name) {
+            currentBank = name;
+            document.querySelectorAll('.bank-chip').forEach(c => {
+                c.classList.toggle('active', c.textContent.trim() === name);
+            });
+            loadMemories();
+        }
+        
+        // Load stats
+        async function loadStats() {
+            try {
+                const res = await fetch(API + '/banks');
+                const data = await res.json();
+                document.getElementById('statBanks').textContent = data.banks.length;
+                
+                // Count total memories across banks
+                let total = 0;
+                let types = new Set();
+                for (const bank of data.banks) {
+                    const memRes = await fetch(API + '/banks/' + bank.name + '/memories?limit=100');
+                    const memData = await memRes.json();
+                    total += memData.count;
+                    memData.memories.forEach(m => types.add(m.memory_type));
+                }
+                document.getElementById('statTotal').textContent = total;
+                document.getElementById('statTypes').textContent = types.size;
+            } catch (e) {
+                console.error('Failed to load stats:', e);
+            }
+        }
+        
+        // Load memories for current bank
+        async function loadMemories() {
+            if (!currentBank) return;
+            
+            const list = document.getElementById('memoryList');
+            list.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            
+            try {
+                const res = await fetch(API + '/banks/' + currentBank + '/memories?limit=50');
+                const data = await res.json();
+                memories = data.memories;
+                
+                document.getElementById('emptyState').classList.toggle('hidden', memories.length > 0);
+                
+                list.innerHTML = memories.map(m => `
+                    <div class="memory-card">
+                        <div class="memory-header">
+                            <div class="memory-meta">
+                                <span class="memory-type ${m.memory_type}">${m.memory_type.replace('_', ' ')}</span>
+                                <span class="memory-importance">${'★'.repeat(m.importance)}${'☆'.repeat(5-m.importance)}</span>
+                            </div>
+                            <div class="memory-actions">
+                                <button class="btn small danger" onclick="askDelete('${m.id}')">Delete</button>
+                            </div>
+                        </div>
+                        <div class="memory-content">${escapeHtml(m.content)}</div>
+                        <div class="memory-footer">
+                            <div class="memory-stats">
+                                <span>Recalled ${m.recall_count}×</span>
+                                <span>${formatDate(m.created_at)}</span>
+                                ${m.source_agent ? `<span>via ${m.source_agent}</span>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                list.innerHTML = '<div class="empty-state"><p>Failed to load memories</p></div>';
+            }
+        }
+        
+        // Search
+        async function performSearch() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (!query) return;
+            
+            const results = document.getElementById('searchResults');
+            results.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            document.getElementById('searchEmpty').classList.add('hidden');
+            
+            try {
+                // Search all banks
+                let allResults = [];
+                for (const bank of banks) {
+                    const res = await fetch(API + '/banks/' + bank.name + '/search', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ query, limit: 10 })
+                    });
+                    const data = await res.json();
+                    allResults = allResults.concat(data.memories.map(m => ({ ...m, bank: bank.name })));
+                }
+                
+                // Sort by importance
+                allResults.sort((a, b) => b.importance - a.importance);
+                
+                document.getElementById('searchEmpty').classList.toggle('hidden', allResults.length > 0);
+                
+                results.innerHTML = allResults.map(m => `
+                    <div class="memory-card">
+                        <div class="memory-header">
+                            <div class="memory-meta">
+                                <span class="memory-type ${m.memory_type}">${m.memory_type.replace('_', ' ')}</span>
+                                <span class="bank-chip small">${m.bank}</span>
+                                <span class="memory-importance">${'★'.repeat(m.importance)}${'☆'.repeat(5-m.importance)}</span>
+                            </div>
+                        </div>
+                        <div class="memory-content">${escapeHtml(m.content)}</div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                results.innerHTML = '<div class="empty-state"><p>Search failed</p></div>';
+            }
+        }
+        
+        // Reflect
+        async function performReflect() {
+            const query = document.getElementById('reflectQuery').value.trim();
+            if (!query) return;
+            
+            const container = document.getElementById('reflectResult');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            
+            try {
+                const res = await fetch(API + '/reflect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query, bank: currentBank })
+                });
+                const data = await res.json();
+                
+                container.innerHTML = `
+                    <div class="reflect-result">
+                        <div class="reflect-answer">${escapeHtml(data.answer)}</div>
+                        ${data.sources && data.sources.length > 0 ? `
+                            <div class="reflect-sources">
+                                <div class="reflect-sources-title">Sources (${data.sources.length})</div>
+                                ${data.sources.map(s => `
+                                    <div class="source-item">
+                                        <span class="memory-type ${s.memory_type}" style="margin-right: 8px;">${s.memory_type}</span>
+                                        ${escapeHtml(s.content)}
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            } catch (e) {
+                container.innerHTML = '<div class="empty-state"><p>Reflection failed</p></div>';
+            }
+        }
+        
+        // Add memory
+        async function loadBankOptions() {
+            const select = document.getElementById('addBank');
+            select.innerHTML = banks.map(b => `
+                <option value="${b.name}">${b.name}${b.bank_type === 'shared' ? ' (shared)' : ''}</option>
+            `).join('');
+            if (currentBank) select.value = currentBank;
+        }
+        
+        async function addMemory() {
+            const content = document.getElementById('addContent').value.trim();
+            const bank = document.getElementById('addBank').value;
+            const type = document.getElementById('addType').value;
+            const context = document.getElementById('addContext').value.trim();
+            
+            if (!content) {
+                showError('Please enter memory content');
+                return;
+            }
+            
+            try {
+                const res = await fetch(API + '/banks/' + bank + '/memories', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        content,
+                        memory_type: type || undefined,
+                        source_context: context || undefined,
+                        source_agent: 'web_ui'
+                    })
+                });
+                const data = await res.json();
+                
+                if (data.duplicate) {
+                    showSuccess('Duplicate detected — existing memory updated');
+                } else {
+                    showSuccess('Memory stored');
+                }
+                
+                document.getElementById('addContent').value = '';
+                document.getElementById('addContext').value = '';
+                loadStats();
+            } catch (e) {
+                showError('Failed to store memory');
+            }
+        }
+        
+        // Delete
+        function askDelete(id) {
+            deleteTargetId = id;
+            document.getElementById('deleteModal').classList.remove('hidden');
+        }
+        
+        function closeDeleteModal() {
+            deleteTargetId = null;
+            document.getElementById('deleteModal').classList.add('hidden');
+        }
+        
+        async function confirmDelete() {
+            if (!deleteTargetId || !currentBank) return;
+            
+            try {
+                await fetch(API + '/banks/' + currentBank + '/memories/' + deleteTargetId, {
+                    method: 'DELETE'
+                });
+                showSuccess('Memory deleted');
+                closeDeleteModal();
+                loadMemories();
+                loadStats();
+            } catch (e) {
+                showError('Delete failed');
+            }
+        }
+        
+        // Helpers
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        function formatDate(iso) {
+            if (!iso) return '';
+            const d = new Date(iso);
+            return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+        
+        function showSuccess(msg) {
+            showToast(msg, 'success');
+        }
+        
+        function showError(msg) {
+            showToast(msg, 'error');
+        }
+        
+        function showToast(msg, type) {
+            const toast = document.createElement('div');
+            toast.className = 'toast ' + type;
+            toast.textContent = msg;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+        
+        // Enter key handlers
+        document.getElementById('searchInput')?.addEventListener('keypress', e => {
+            if (e.key === 'Enter') performSearch();
+        });
+        
+        document.getElementById('reflectQuery')?.addEventListener('keypress', e => {
+            if (e.key === 'Enter') performReflect();
+        });
+        
+        // Start
+        init();
+    </script>
+</body>
+</html>

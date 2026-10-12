@@ -6,11 +6,17 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use rust_embed::RustEmbed;
 use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::db::memories::NewMemory;
 use crate::db::Db;
+
+/// Embedded UI assets
+#[derive(RustEmbed)]
+#[folder = "ui/dist/"]
+struct UiAssets;
 
 /// Shared application state
 #[derive(Clone)]
@@ -306,11 +312,38 @@ async fn reflect(
     })))
 }
 
+/// Serve embedded UI assets
+async fn serve_ui(Path(path): Path<String>) -> Result<axum::response::Response, StatusCode> {
+    let path = if path.is_empty() { "index.html" } else { &path };
+    
+    match UiAssets::get(path) {
+        Some(content) => {
+            let mime = match path.rsplit('.').next() {
+                Some("html") => "text/html",
+                Some("js") => "application/javascript",
+                Some("css") => "text/css",
+                Some("json") => "application/json",
+                Some("png") => "image/png",
+                Some("svg") => "image/svg+xml",
+                _ => "application/octet-stream",
+            };
+            
+            Ok(axum::response::Response::builder()
+                .header("content-type", mime)
+                .body(axum::body::Body::from(content.data))
+                .unwrap())
+        }
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
 /// Build the REST API router
 pub fn router(db: Arc<Db>) -> Router {
     let state = AppState { db };
 
     Router::new()
+        .route("/", get(|| async { serve_ui(Path("".to_string())).await }))
+        .route("/*path", get(serve_ui))
         .route("/health", get(health))
         .route("/banks", get(list_banks).post(create_bank))
         .route("/banks/:name", get(get_bank))
