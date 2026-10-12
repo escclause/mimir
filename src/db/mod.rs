@@ -81,6 +81,33 @@ impl Db {
             )?;
         }
 
+        // Seed default banks on first run
+        Self::seed_default_banks(&conn)?;
+
+        Ok(())
+    }
+
+    /// Seed default banks on first run.
+    /// Creates a shared knowledge bank that all agents can read.
+    fn seed_default_banks(conn: &Connection) -> Result<()> {
+        // Check if any banks exist
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM banks", [], |row| row.get(0))?;
+
+        if count == 0 {
+            tracing::info!("seeding default banks");
+
+            // Create shared knowledge bank (owned by 'system', readable by all)
+            let id = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO banks (id, name, agent_id, bank_type, created_at, updated_at)
+                 VALUES (?1, 'shared_knowledge', 'system', 'shared', ?2, ?2)",
+                params![id, now],
+            )?;
+
+            tracing::info!("created shared_knowledge bank");
+        }
+
         Ok(())
     }
 

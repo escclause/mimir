@@ -557,57 +557,92 @@ impl MimirServer {
     ) -> Result<Content, String> {
         let limit = input.limit.unwrap_or(5);
 
-        // Find the agent's bank
+        // Find banks the asking agent can access (own banks + shared banks)
         let banks = self
             .db
             .list_banks_for_agent(&input.agent)
             .map_err(|e| format!("failed to list banks: {}", e))?;
 
-        if banks.is_empty() {
+        // Also check shared banks
+        let all_banks = self
+            .db
+            .list_banks()
+            .map_err(|e| format!("failed to list all banks: {}", e))?;
+
+        let shared_banks: Vec<_> = all_banks
+            .iter()
+            .filter(|b| b.bank_type == "shared")
+            .collect();
+
+        if banks.is_empty() && shared_banks.is_empty() {
             return Err(format!("no banks found for agent: {}", input.agent));
         }
 
-        // Use the first (default) bank
-        let bank = &banks[0];
+        // Search own banks first, then shared banks
+        let mut all_results = Vec::new();
 
-        // Check read permission using the agents module
-        let permitted = self
-            .db
-            .can_read(&input.agent, &bank.id)
-            .map_err(|e| format!("permission check failed: {}", e))?;
+        // Search own banks
+        for bank in &banks {
+            let permitted = self
+                .db
+                .can_read(&input.agent, &bank.id)
+                .map_err(|e| format!("permission check failed: {}", e))?;
 
-        if !permitted {
-            return Err(format!(
-                "agent '{}' does not have read permission for bank '{}'",
-                input.agent, bank.name
-            ));
+            if permitted {
+                let memories = self
+                    .db
+                    .recall_memories(&bank.id, &input.query, limit)
+                    .map_err(|e| format!("recall failed: {}", e))?;
+
+                for m in memories {
+                    all_results.push(serde_json::json!({
+                        "id": m.id,
+                        "content": m.content,
+                        "memory_type": m.memory_type,
+                        "importance": m.importance,
+                        "confidence": m.confidence,
+                        "created_at": m.created_at,
+                        "bank": bank.name,
+                    }));
+                }
+            }
         }
 
-        let memories = self
-            .db
-            .recall_memories(&bank.id, &input.query, limit)
-            .map_err(|e| format!("recall failed: {}", e))?;
+        // Search shared banks
+        for bank in shared_banks {
+            let memories = self
+                .db
+                .recall_memories(&bank.id, &input.query, limit)
+                .map_err(|e| format!("recall failed: {}", e))?;
 
-        let results: Vec<serde_json::Value> = memories
-            .iter()
-            .map(|m| {
-                serde_json::json!({
+            for m in memories {
+                all_results.push(serde_json::json!({
                     "id": m.id,
                     "content": m.content,
                     "memory_type": m.memory_type,
                     "importance": m.importance,
                     "confidence": m.confidence,
                     "created_at": m.created_at,
-                })
-            })
-            .collect();
+                    "bank": bank.name,
+                }));
+            }
+        }
+
+        // Sort by importance descending
+        all_results.sort_by(|a, b| {
+            let imp_a = a["importance"].as_i64().unwrap_or(0);
+            let imp_b = b["importance"].as_i64().unwrap_or(0);
+            imp_b.cmp(&imp_a)
+        });
+
+        // Limit total results
+        all_results.truncate(limit);
 
         let response = serde_json::json!({
             "agent": input.agent,
-            "bank": bank.name,
             "query": input.query,
-            "count": results.len(),
-            "memories": results,
+            "count": all_results.len(),
+            "memories": all_results,
         });
 
         Content::json(response).map_err(|e| format!("failed to serialize response: {}", e))
