@@ -1,8 +1,11 @@
 {
   "id": "mimir",
-  "categories": ["memory", "tools"],
+  "categories": [
+    "memory",
+    "tools"
+  ],
   "activation": {
-    "onStartup": false
+    "onStartup": true
   },
   "uiHints": {
     "mimir.binaryPath": {
@@ -27,31 +30,37 @@
       "id": "mimir",
       "title": "Mímir Memory",
       "order": 10,
-      "properties": ["mimir"]
+      "properties": [
+        "mimir"
+      ]
     }
   ],
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
     "properties": {
-      "mimir": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "binaryPath": {
-            "type": "string"
-          },
-          "databasePath": {
-            "type": "string"
-          },
-          "defaultBank": {
-            "type": "string"
-          },
-          "defaultAgent": {
-            "type": "string"
-          }
-        }
+      "binaryPath": {
+        "type": "string"
+      },
+      "databasePath": {
+        "type": "string"
+      },
+      "defaultBank": {
+        "type": "string"
+      },
+      "defaultAgent": {
+        "type": "string"
       }
     }
+  },
+  "name": "Mímir Memory",
+  "description": "Norse-themed agent memory system with day/night cognition. Store, recall, and reflect on memories across isolated per-agent banks.",
+  "version": "0.1.0",
+  "contracts": {
+    "tools": [
+      "mimir_retain",
+      "mimir_recall",
+      "mimir_reflect",
+      "mimir_ask"
+    ]
   }
 }

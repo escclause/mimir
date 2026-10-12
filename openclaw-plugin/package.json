@@ -1,11 +1,11 @@
 {
   "name": "@openclaw/mimir-plugin",
   "version": "0.1.0",
-  "description": "OpenClaw plugin for Mímir - Norse-themed agent memory system with day/night cognition",
+  "description": "OpenClaw plugin for M\u00edmir - Norse-themed agent memory system with day/night cognition",
   "type": "module",
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      "./dist/index.js"
     ],
     "install": {
       "clawhubSpec": "clawhub:@openclaw/mimir-plugin",

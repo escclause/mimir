@@ -8,14 +8,13 @@ use uuid::Uuid;
 use super::Db;
 
 /// Sanitize a user query for FTS5 MATCH.
-/// Escapes special characters that would cause FTS5 syntax errors.
+/// Uses OR semantics so any matching token returns results.
 fn sanitize_fts_query(query: &str) -> String {
     // FTS5 special characters: " * ( ) : ^ { } [ ] AND OR NOT
-    // We wrap each token in double quotes to treat them as literal phrases
+    // Wrap each token in quotes and join with OR for forgiving search
     query
         .split_whitespace()
         .map(|token| {
-            // Remove any existing quotes, then wrap in quotes
             let clean: String = token.chars().filter(|c| *c != '"' && *c != '*').collect();
             if clean.is_empty() {
                 String::new()
@@ -25,7 +24,7 @@ fn sanitize_fts_query(query: &str) -> String {
         })
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" OR ")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
