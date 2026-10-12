@@ -13,25 +13,23 @@ Mímir separates memory into fast judgment (System One) and deep reasoning (Syst
 │           MÍMIR (Memory System)         │
 ├─────────────────────────────────────────┤
 │                                         │
-│  DAY — Kev-0.8B (System One)            │
+│  DAY — D1-OMNI-600M (System One)        │
 │  ├── Classify: world fact? experience?  │
+│  ├── Score importance (1-5)             │
 │  ├── Route to appropriate bank          │
-│  ├── Score candidates                   │
-│  ├── Judge: merge? contradict?          │
 │  └── Log all decisions + confidence     │
 │                                         │
-│  NIGHT — Qwen2.5-7B (System Two)        │
-│  ├── Audit day's Kev decisions          │
+│  NIGHT — LFM2.5-2.6B (System Two)       │
+│  ├── Audit day's D1 decisions           │
+│  ├── Consolidate related memories       │
 │  ├── Build mental models                │
-│  ├── Write knowledge pages              │
-│  ├── Generate markdown views            │
-│  └── Log corrections for feedback       │
+│  ├── Repair contradictions              │
+│  └── Decay stale memories               │
 │                                         │
-│  STORAGE — SQLite + Files               │
+│  STORAGE — SQLite + FTS5                │
 │  ├── Per-agent banks (write)            │
 │  ├── Shared bank (read-only)            │
-│  ├── Cold: JSONL transcripts            │
-│  └── Views: Markdown (generated)        │
+│  └── Full-text search with stemming     │
 │                                         │
 │  INTERFACE                              │
 │  ├── MCP Server (OpenClaw integration)  │
@@ -45,7 +43,7 @@ Mímir separates memory into fast judgment (System One) and deep reasoning (Syst
 
 | Problem | Existing Solutions | Mímir's Approach |
 |---------|-------------------|------------------|
-| **Hallucination** | LLM-based memory makes things up | Jev-type models make *constrained* judgments — no free generation |
+| **Hallucination** | LLM-based memory makes things up | D1 makes *constrained* judgments — no free generation |
 | **Token bloat** | Dump full history into context | Pre-filtered, ranked, deduplicated memories |
 | **No structure** | Flat vector search | Hierarchical banks + typed memories + provenance |
 | **No learning** | Static after initial setup | Night shift audits and corrects day shift |
@@ -66,6 +64,7 @@ Mímir separates memory into fast judgment (System One) and deep reasoning (Syst
 
 - Rust 1.70+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
 - SQLite (bundled with rusqlite)
+- Optional: [llama.cpp](https://github.com/ggerganov/llama.cpp) for D1/night shift models
 
 ### Build & Run
 
@@ -77,7 +76,7 @@ cd mimir
 # Build
 cargo build --release
 
-# Run (MCP server over stdio)
+# Run (MCP server over stdio + REST API + Web UI)
 ./target/release/mimir
 ```
 
@@ -96,6 +95,12 @@ Add to your OpenClaw MCP config:
 }
 ```
 
+Or install as an OpenClaw plugin (auto-discovers tools):
+
+```bash
+openclaw plugins install /path/to/mimir/openclaw-plugin
+```
+
 ### MCP Tools
 
 | Tool | Description |
@@ -105,34 +110,104 @@ Add to your OpenClaw MCP config:
 | `mimir_reflect` | Answer from memories with provenance |
 | `mimir_ask` | Query another agent's bank (read-only) |
 
+## Web UI
+
+Mímir includes an embedded web interface for browsing and managing memories.
+
+**Access:** `http://127.0.0.1:8083` (when Mímir is running)
+
+**Features:**
+- Browse memories by bank
+- Search across all banks (FTS with stemming)
+- Ask questions (reflect) with sourced answers
+- Add memories manually
+- Delete memories
+- View stats (total memories, banks, types)
+
+### OpenClaw Portal Integration
+
+To add Mímir to your OpenClaw Control UI sidebar:
+
+1. Start Mímir (so the Web UI is running)
+2. In any OpenClaw session, run:
+   ```
+   portal(action="open", port=8083, title="Mímir Memory", description="Browse and manage agent memories")
+   ```
+3. A "Mímir Memory" link appears in Control UI → click to open the Web UI
+
+**Note:** The portal link only works while Mímir is running. If you restart Mímir, re-run the portal command.
+
+## REST API
+
+Mímir exposes a REST API on `http://127.0.0.1:8083` for external tool integration.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/banks` | GET | List all banks |
+| `/banks` | POST | Create new bank |
+| `/banks/:name` | GET | Get bank details |
+| `/banks/:name/memories` | GET | List memories (with `?limit=`) |
+| `/banks/:name/memories` | POST | Store new memory |
+| `/banks/:name/memories/:id` | GET | Get specific memory |
+| `/banks/:name/memories/:id` | DELETE | Delete memory |
+| `/banks/:name/search` | POST | FTS search memories |
+| `/reflect` | POST | Generate answer from memories |
+
+### Example: Store a Memory
+
+```bash
+curl -X POST http://127.0.0.1:8083/banks/my_bank/memories \
+  -H "Content-Type: application/json" \
+  -d '{"content": "I prefer dark mode interfaces"}'
+```
+
+### Example: Search Memories
+
+```bash
+curl -X POST http://127.0.0.1:8083/banks/my_bank/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "dark mode", "limit": 5}'
+```
+
 ## Configuration
 
-All configuration via Web UI (coming soon), stored in SQLite. No config files.
+Configuration is stored in SQLite and editable via the Web UI (coming soon). Defaults:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Port | 8080 | HTTP server port |
-| Kev Model | kev-0.8b | Jev backend |
-| Night Model | qwen2.5-7b | Night shift LLM |
-| Night Schedule | 0 2 * * * | Cron schedule |
+| REST Port | 8083 | HTTP server port |
+| D1 Model | d1-omni-600m | Day-shift decision engine |
+| D1 Port | 8081 | llama-server port for D1 |
+| Night Model | lfm2.5-2.6b | Night-shift synthesis engine |
+| Night Port | 8082 | llama-server port for night shift |
+| Night Schedule | 0 2 * * * | Cron schedule (daily at 2am) |
 | Storage Path | ~/.mimir | Data directory |
 
 ## Project Status
 
-**Early development.** Core database, MCP server, and mock Jev engine are functional. Kev-0.8B ONNX integration is stubbed. Night shift not yet implemented.
+**v1.0 — Feature complete.** All core features implemented and tested.
 
-### Roadmap
+### Implemented
 
 - [x] Database schema + migrations
 - [x] MCP server (4 tools)
-- [x] Mock Jev engine
-- [ ] Kev-0.8B ONNX integration
-- [ ] Night shift (Qwen2.5-7B)
-- [ ] REST API
-- [ ] Web UI
-- [ ] OpenClaw plugin
-- [ ] Import/export (MEMORY.md, conversation history)
+- [x] D1 day-shift engine (llama.cpp)
+- [x] Night shift engine (LFM2.5-2.6B)
+- [x] Night shift scheduler (cron)
+- [x] Deduplication
+- [x] Shared banks
+- [x] REST API
+- [x] Web UI
+- [x] OpenClaw plugin
+
+### Roadmap
+
+- [ ] Config persistence (currently hardcoded defaults)
+- [ ] Memory export/import
 - [ ] LoRA fine-tuning pipeline
+- [ ] Multi-user support
+- [ ] Cloud sync (optional)
 
 ## License
 
@@ -144,9 +219,9 @@ Contributions welcome. Please open an issue first to discuss what you'd like to 
 
 ## Acknowledgments
 
-- [Kev](https://github.com/jaredpalmer/kev) — Jev-compatible decision models
-- [Hindsight](https://github.com/vectorize-io/hindsight) — Mental models & knowledge pages inspiration
-- [fast-memory](https://github.com/KonghaYao/fast-memory) — Jev+LLM memory validation
+- [Liquid AI](https://www.liquid.ai/) — LFM2.5 models (D1-OMNI, LFM2.5-2.6B)
+- [llama.cpp](https://github.com/ggerganov/llama.cpp) — Local inference engine
+- [Hindsight](https://github.com/vectorize-io/hindsight) — Mental models inspiration
 - [Jev-Mem paper](https://arxiv.org/abs/2609.23986) — System-One-controlled memory architecture
 
 ---
