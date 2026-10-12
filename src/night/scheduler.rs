@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use chrono::TimeZone;
 use tokio::sync::Mutex;
 
 use crate::db::Db;
@@ -20,6 +21,78 @@ pub struct NightScheduler {
     schedule: String, // cron expression
 }
 
+/// Parsed cron schedule
+#[derive(Debug, Clone)]
+struct CronSchedule {
+    minute: u8,  // 0-59
+    hour: u8,    // 0-23
+}
+
+impl CronSchedule {
+    /// Parse a simple cron expression (only supports "M H * * *" format)
+    fn parse(expr: &str) -> Result<Self> {
+        let parts: Vec<&str> = expr.split_whitespace().collect();
+        if parts.len() != 5 {
+            return Err(anyhow::anyhow!(
+                "Invalid cron expression: {} (expected 5 fields)",
+                expr
+            ));
+        }
+
+        let minute = parts[0]
+            .parse::<u8>()
+            .map_err(|_| anyhow::anyhow!("Invalid minute: {}", parts[0]))?;
+        let hour = parts[1]
+            .parse::<u8>()
+            .map_err(|_| anyhow::anyhow!("Invalid hour: {}", parts[1]))?;
+
+        if minute > 59 {
+            return Err(anyhow::anyhow!("Minute out of range: {}", minute));
+        }
+        if hour > 23 {
+            return Err(anyhow::anyhow!("Hour out of range: {}", hour));
+        }
+
+        // Verify day-of-week, day-of-month, month are "*" (not supported yet)
+        if parts[2] != "*" || parts[3] != "*" || parts[4] != "*" {
+            return Err(anyhow::anyhow!(
+                "Only daily schedules supported (M H * * *), got: {}",
+                expr
+            ));
+        }
+
+        Ok(Self { minute, hour })
+    }
+
+    /// Calculate duration until next run time
+    fn duration_until_next(&self) -> Duration {
+        let now = chrono::Local::now();
+        let today = now.date_naive();
+
+        let next = today.and_hms_opt(self.hour as u32, self.minute as u32, 0)
+            .unwrap_or_else(|| today.and_hms_opt(0, 0, 0).unwrap());
+
+        let next_dt = if next > now.naive_local() {
+            next
+        } else {
+            // Already passed today, schedule for tomorrow
+            (today + chrono::Duration::days(1))
+                .and_hms_opt(self.hour as u32, self.minute as u32, 0)
+                .unwrap()
+        };
+
+        let now_ts = now.timestamp();
+        let next_ts = chrono::Local
+            .from_local_datetime(&next_dt)
+            .single()
+            .map(|dt| dt.timestamp())
+            .unwrap_or(now_ts + 86400);
+
+        let secs = (next_ts - now_ts).max(0) as u64;
+        Duration::from_secs(secs)
+    }
+}
+
 impl NightScheduler {
     pub fn new(db: Arc<Db>, schedule: String) -> Self {
         Self {
@@ -31,18 +104,72 @@ impl NightScheduler {
 
     /// Start the scheduler loop.
     ///
-    /// This spawns a background task that checks the time periodically
-    /// and runs night shift tasks when scheduled.
+    /// Parses the cron schedule and sleeps until the next run time.
+    /// Then runs night shift tasks and repeats.
     pub async fn start(self: Arc<Self>) -> Result<()> {
+        // Parse schedule
+        let cron = match CronSchedule::parse(&self.schedule) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    schedule = %self.schedule,
+                    "Invalid cron schedule, night shift disabled"
+                );
+                return Err(e);
+            }
+        };
+
+        tracing::info!(
+            schedule = %self.schedule,
+            hour = cron.hour,
+            minute = cron.minute,
+            "Night shift scheduler started"
+        );
+
         tokio::spawn(async move {
             loop {
-                // Check if it's time to run (simplified: check every hour)
-                // In production, use a proper cron parser
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+                let wait = cron.duration_until_next();
+                let wait_hours = wait.as_secs() as f64 / 3600.0;
 
-                // TODO: Parse cron schedule and check if we should run
-                // For now, just log that scheduler is alive
-                tracing::debug!("Night shift scheduler tick (schedule: {})", self.schedule);
+                tracing::info!(
+                    wait_hours = format!("{:.1}", wait_hours),
+                    "Night shift sleeping until next run"
+                );
+
+                tokio::time::sleep(wait).await;
+
+                tracing::info!("Night shift wake time — starting tasks");
+
+                match self.run_now().await {
+                    Ok(report) => {
+                        tracing::info!(
+                            audited = report.audited,
+                            consolidated = report.consolidated,
+                            models = report.models_built,
+                            repaired = report.repaired,
+                            errors = report.errors.len(),
+                            "Night shift complete"
+                        );
+
+                        // Log to database
+                        let _ = self.db.log_night_audit(
+                            &chrono::Local::now().format("%Y-%m-%d").to_string(),
+                            report.audited as i64,
+                            0, // corrections_made — TODO: track from audit
+                            report.models_built as i64,
+                            Some(&format!(
+                                "Consolidated: {}, Repaired: {}, Errors: {}",
+                                report.consolidated,
+                                report.repaired,
+                                report.errors.len()
+                            )),
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Night shift failed");
+                    }
+                }
             }
         });
 
@@ -208,22 +335,137 @@ impl NightScheduler {
 
     /// Build mental models from patterns.
     async fn build_mental_models(&self) -> Result<usize> {
-        // TODO: Implement mental model building
-        // This would:
-        // 1. Get all observations and experiences
-        // 2. Identify recurring patterns
-        // 3. Create/update mental model entries
-        Ok(0)
+        let engine_guard = self.engine.lock().await;
+        let engine = engine_guard.as_ref().ok_or_else(|| anyhow::anyhow!("Engine not available"))?;
+
+        // Get all memories to analyze for patterns
+        let all_banks = self.db.list_banks()?;
+        let mut all_memories = Vec::new();
+
+        for bank in &all_banks {
+            let memories = self.db.all_memories(&bank.id)?;
+            all_memories.extend(memories);
+        }
+
+        if all_memories.len() < 5 {
+            tracing::debug!(
+                count = all_memories.len(),
+                "Not enough memories for mental model building"
+            );
+            return Ok(0);
+        }
+
+        // Group by memory type for pattern analysis
+        let observations: Vec<_> = all_memories
+            .iter()
+            .filter(|m| m.memory_type == "observation" || m.memory_type == "experience")
+            .collect();
+
+        if observations.is_empty() {
+            return Ok(0);
+        }
+
+        // Build prompt for mental model generation
+        let system = "You are a pattern recognition engine. Analyze observations and identify recurring themes, user preferences, and behavioral patterns. Create concise mental models.";
+
+        let obs_text: Vec<String> = observations
+            .iter()
+            .enumerate()
+            .map(|(i, m)| format!("{}. {}", i + 1, m.content))
+            .collect();
+
+        let user = format!(
+            "Observations:\n{}\n\nIdentify:\n1. Recurring themes (3-5)\n2. User preferences inferred\n3. Behavioral patterns\n4. Suggested mental models (name + description)",
+            obs_text.join("\n")
+        );
+
+        let response = engine.chat(system, &user, 1500)?;
+
+        // Store as a special synthesis with type marker
+        self.db.store_synthesis(
+            &format!("[MENTAL_MODELS]\n{}", response),
+            observations.len(),
+        )?;
+
+        Ok(observations.len())
     }
 
     /// Repair memories (resolve contradictions, decay stale).
     async fn repair_memories(&self) -> Result<usize> {
-        // TODO: Implement repair
-        // This would:
-        // 1. Detect contradictions between memories
-        // 2. Mark stale memories for decay
-        // 3. Resolve conflicts using night shift reasoning
-        Ok(0)
+        let engine_guard = self.engine.lock().await;
+        let engine = engine_guard.as_ref().ok_or_else(|| anyhow::anyhow!("Engine not available"))?;
+
+        // Get all memories to check for contradictions
+        let all_banks = self.db.list_banks()?;
+        let mut all_memories = Vec::new();
+
+        for bank in &all_banks {
+            let memories = self.db.all_memories(&bank.id)?;
+            all_memories.extend(memories);
+        }
+
+        if all_memories.len() < 2 {
+            return Ok(0);
+        }
+
+        // Simple contradiction detection: look for negation patterns
+        // In production, this would use embedding similarity + LLM reasoning
+        let mut repaired = 0;
+
+        // Check for exact duplicates that slipped through
+        let mut seen_content: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for mem in &all_memories {
+            let normalized = mem.content.to_lowercase();
+            if let Some(count) = seen_content.get(&normalized) {
+                if *count > 0 {
+                    // Duplicate found — mark for decay by reducing importance
+                    let _ = self.db.update_memory_importance(&mem.id, 1);
+                    repaired += 1;
+                }
+                seen_content.insert(normalized, count + 1);
+            } else {
+                seen_content.insert(normalized, 1);
+            }
+        }
+
+        // Check for stale memories (not recalled in 90 days)
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(90);
+        let cutoff_str = cutoff.to_rfc3339();
+
+        for mem in &all_memories {
+            if let Some(last_recalled) = &mem.last_recalled_at {
+                if last_recalled < &cutoff_str && mem.importance > 1 {
+                    // Decay stale memory
+                    let _ = self.db.update_memory_importance(
+                        &mem.id,
+                        mem.importance.saturating_sub(1),
+                    );
+                    repaired += 1;
+                }
+            }
+        }
+
+        // Use LLM for deeper contradiction analysis if we have enough memories
+        if all_memories.len() >= 10 {
+            let system = "You are a memory consistency checker. Identify contradictions between memories and suggest resolutions.";
+
+            let mem_text: Vec<String> = all_memories
+                .iter()
+                .take(20) // Limit to avoid token overflow
+                .enumerate()
+                .map(|(i, m)| format!("{}. {}", i + 1, m.content))
+                .collect();
+
+            let user = format!(
+                "Memories:\n{}\n\nIdentify:\n1. Direct contradictions (if any)\n2. Outdated information\n3. Suggested merges or archives",
+                mem_text.join("\n")
+            );
+
+            let _response = engine.chat(system, &user, 1000)?;
+            // TODO: Parse response and apply corrections
+        }
+
+        Ok(repaired)
     }
 }
 

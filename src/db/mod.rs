@@ -202,4 +202,34 @@ impl Db {
         )?;
         Ok(())
     }
+
+    /// Update memory importance (for night shift repair/decay).
+    pub fn update_memory_importance(&self, memory_id: &str, importance: u8) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE memories SET importance = ?1, updated_at = ?2 WHERE id = ?3",
+            params![importance, now, memory_id],
+        )?;
+        Ok(())
+    }
+
+    /// Log a night shift audit run.
+    pub fn log_night_audit(
+        &self,
+        audit_date: &str,
+        decisions_reviewed: i64,
+        corrections_made: i64,
+        models_built: i64,
+        summary: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO night_audits (id, audit_date, decisions_reviewed, corrections_made, models_built, summary)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, audit_date, decisions_reviewed, corrections_made, models_built, summary],
+        )?;
+        Ok(())
+    }
 }
