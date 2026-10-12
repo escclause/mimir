@@ -334,6 +334,30 @@ impl MimirServer {
             ));
         }
 
+        // Check for duplicate before storing
+        if let Some(existing) = self
+            .db
+            .find_duplicate(&bank.id, &input.content)
+            .map_err(|e| format!("duplicate check failed: {}", e))?
+        {
+            // Update existing memory instead of creating duplicate
+            self.db
+                .touch_memory(&existing.id)
+                .map_err(|e| format!("failed to update existing memory: {}", e))?;
+
+            let response = serde_json::json!({
+                "id": existing.id,
+                "bank": bank.name,
+                "memory_type": existing.memory_type,
+                "importance": existing.importance,
+                "confidence": existing.confidence,
+                "duplicate": true,
+                "recall_count": existing.recall_count + 1,
+            });
+
+            return Content::json(response).map_err(|e| format!("failed to serialize response: {}", e));
+        }
+
         // Get current engine (may trigger lazy D1 spawn)
         let (engine, engine_kind) = self.engine();
 

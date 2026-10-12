@@ -27,6 +27,34 @@ fn sanitize_fts_query(query: &str) -> String {
         .join(" OR ")
 }
 
+/// Calculate word overlap similarity between two strings.
+/// Returns 0.0-1.0 where 1.0 = identical word sets.
+fn content_similarity(a: &str, b: &str) -> f64 {
+    let words_a: std::collections::HashSet<&str> = a
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| !w.is_empty() && w.len() > 2) // skip short words
+        .collect();
+    let words_b: std::collections::HashSet<&str> = b
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| !w.is_empty() && w.len() > 2)
+        .collect();
+
+    if words_a.is_empty() || words_b.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = words_a.intersection(&words_b).count();
+    let union = words_a.union(&words_b).count();
+
+    if union == 0 {
+        return 0.0;
+    }
+
+    intersection as f64 / union as f64
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
     pub rowid: i64,
@@ -78,6 +106,67 @@ pub struct NewMemory {
 }
 
 impl Db {
+    /// Find a duplicate memory by content similarity.
+    /// Returns the existing memory if content matches exactly or is very similar.
+    pub fn find_duplicate(&self, bank_id: &str, content: &str) -> Result<Option<Memory>> {
+        let conn = self.conn.lock().unwrap();
+
+        // Exact match first (fast path)
+        let exact_sql = "
+            SELECT rowid, id, bank_id, content, memory_type, importance, confidence,
+                   source_agent, source_context, provenance, created_at, updated_at,
+                   last_recalled_at, recall_count
+            FROM memories
+            WHERE bank_id = ?1 AND content = ?2
+            LIMIT 1
+        ";
+        let mut stmt = conn.prepare(exact_sql)?;
+        let mut rows = stmt.query_map(params![bank_id, content], Memory::from_row)?;
+        if let Some(row) = rows.next() {
+            return Ok(Some(row?));
+        }
+
+        // FTS match for near-duplicates (slower but catches paraphrases)
+        let sanitized = sanitize_fts_query(content);
+        if !sanitized.is_empty() {
+            let fts_sql = "
+                SELECT m.rowid, m.id, m.bank_id, m.content, m.memory_type, m.importance, m.confidence,
+                       m.source_agent, m.source_context, m.provenance, m.created_at, m.updated_at,
+                       m.last_recalled_at, m.recall_count
+                FROM memories m
+                JOIN memories_fts fts ON m.rowid = fts.rowid
+                WHERE memories_fts MATCH ?1 AND m.bank_id = ?2
+                ORDER BY m.importance DESC, m.created_at DESC
+                LIMIT 5
+            ";
+            let mut stmt = conn.prepare(fts_sql)?;
+            let rows = stmt.query_map(params![sanitized, bank_id], Memory::from_row);
+            if let Ok(rs) = rows {
+                for row in rs {
+                    if let Ok(mem) = row {
+                        // Simple similarity: check if >70% of words overlap
+                        if content_similarity(&content, &mem.content) > 0.7 {
+                            return Ok(Some(mem));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Update an existing memory (bump recall count, refresh timestamp)
+    pub fn touch_memory(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE memories SET last_recalled_at = ?1, recall_count = recall_count + 1, updated_at = ?1 WHERE id = ?2",
+            params![now, id],
+        )?;
+        Ok(())
+    }
+
     /// Store a new memory
     pub fn store_memory(&self, bank_id: &str, new_memory: NewMemory) -> Result<Memory> {
         let conn = self.conn.lock().unwrap();
