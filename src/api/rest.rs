@@ -312,6 +312,125 @@ async fn reflect(
     })))
 }
 
+/// Import memories from file
+#[derive(Debug, Deserialize)]
+pub struct ImportRequest {
+    pub path: String,
+    pub source: String, // "openclaw_daily", "openclaw_memory", "openclaw_user", "markdown", "json", "text"
+    pub agent: Option<String>,
+}
+
+async fn import_memories(
+    State(state): State<AppState>,
+    Path(bank_name): Path<String>,
+    Json(req): Json<ImportRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let bank = state
+        .db
+        .get_bank_by_name(&bank_name)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let source = match req.source.as_str() {
+        "openclaw_daily" => crate::import::ImportSource::OpenClawDaily,
+        "openclaw_memory" => crate::import::ImportSource::OpenClawMemory,
+        "openclaw_user" => crate::import::ImportSource::OpenClawUser,
+        "markdown" => crate::import::ImportSource::Markdown,
+        "json" => crate::import::ImportSource::Json,
+        "text" => crate::import::ImportSource::Text,
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    let path = std::path::Path::new(&req.path);
+    let agent = req.agent.unwrap_or_else(|| "import".to_string());
+
+    let result = crate::import::import_from_file(&state.db, &bank.id, path, source, &agent)
+        .map_err(|e| {
+            tracing::error!(error = %e, "import failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "source": req.source,
+        "path": req.path,
+        "total_found": result.total_found,
+        "imported": result.imported,
+        "skipped_duplicates": result.skipped_duplicates,
+        "errors": result.errors,
+    })))
+}
+
+/// Import from OpenClaw workspace
+#[derive(Debug, Deserialize)]
+pub struct ImportOpenClawRequest {
+    pub workspace_path: String,
+    pub agent: Option<String>,
+}
+
+async fn import_openclaw_workspace(
+    State(state): State<AppState>,
+    Path(bank_name): Path<String>,
+    Json(req): Json<ImportOpenClawRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let bank = state
+        .db
+        .get_bank_by_name(&bank_name)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let workspace = std::path::Path::new(&req.workspace_path);
+    let agent = req.agent.unwrap_or_else(|| "openclaw_import".to_string());
+
+    let results = crate::import::import_openclaw_workspace(&state.db, &bank.id, workspace, &agent)
+        .map_err(|e| {
+            tracing::error!(error = %e, "OpenClaw import failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let total_found: usize = results.iter().map(|r| r.total_found).sum();
+    let total_imported: usize = results.iter().map(|r| r.imported).sum();
+    let total_skipped: usize = results.iter().map(|r| r.skipped_duplicates).sum();
+
+    Ok(Json(serde_json::json!({
+        "workspace_path": req.workspace_path,
+        "files_processed": results.len(),
+        "total_found": total_found,
+        "total_imported": total_imported,
+        "total_skipped_duplicates": total_skipped,
+        "details": results,
+    })))
+}
+
+/// Export memories to JSON
+#[derive(Debug, Deserialize)]
+pub struct ExportRequest {
+    pub output_path: String,
+}
+
+async fn export_memories(
+    State(state): State<AppState>,
+    Path(bank_name): Path<String>,
+    Json(req): Json<ExportRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let bank = state
+        .db
+        .get_bank_by_name(&bank_name)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let output = std::path::Path::new(&req.output_path);
+    let count = crate::import::export_to_json(&state.db, &bank.id, output)
+        .map_err(|e| {
+            tracing::error!(error = %e, "export failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "output_path": req.output_path,
+        "exported": count,
+    })))
+}
+
 /// Trigger night shift manually (for testing)
 async fn trigger_night_shift(State(state): State<AppState>) -> Result<Json<serde_json::Value>, StatusCode> {
     // Spawn a thread to run night shift so we don't block the response
@@ -395,6 +514,9 @@ pub fn router(db: Arc<Db>) -> Router {
         .route("/banks/:name/memories", get(list_memories).post(store_memory))
         .route("/banks/:name/memories/:id", get(get_memory).delete(delete_memory))
         .route("/banks/:name/search", post(search_memories))
+        .route("/banks/:name/import", post(import_memories))
+        .route("/banks/:name/import-openclaw", post(import_openclaw_workspace))
+        .route("/banks/:name/export", post(export_memories))
         .route("/reflect", post(reflect))
         .route("/night-shift", post(trigger_night_shift))
         .with_state(state)
