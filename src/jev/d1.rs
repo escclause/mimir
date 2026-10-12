@@ -68,6 +68,7 @@ impl D1Engine {
 
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(10))
+            .no_proxy() // Bypass system proxy for localhost connections
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {}", e))?;
 
@@ -174,6 +175,7 @@ impl D1Engine {
         // Wait for server to be ready
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(5))
+            .no_proxy() // Bypass system proxy for localhost connections
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {}", e))?;
 

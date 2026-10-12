@@ -145,14 +145,28 @@ impl NightEngine {
                 "4", // 4 threads for CPU inference
                 "-c",
                 "131072", // 128K context
+                "-ngl",
+                "99", // GPU offload all layers
             ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::null())  // Discard stdout to prevent pipe blocking
+            .stderr(Stdio::piped())  // Capture stderr for debugging
             .spawn()
             .map_err(|e| anyhow::anyhow!("Failed to spawn llama-server: {}", e))?;
 
+        // Capture stderr in background thread to prevent pipe buffer from filling
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                use std::io::{BufRead, BufReader};
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().map_while(Result::ok) {
+                    eprintln!("[llama-server] {}", line);
+                }
+            });
+        }
+
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
+            .no_proxy() // Bypass system proxy for localhost connections
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {}", e))?;
 
@@ -160,7 +174,7 @@ impl NightEngine {
         let mut ready = false;
         let mut last_error = String::new();
 
-        for _ in 0..120 {
+        for i in 0..120 {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     return Err(anyhow::anyhow!(
@@ -171,17 +185,33 @@ impl NightEngine {
                 Ok(None) => {
                     match client.get(&health_url).send() {
                         Ok(resp) => {
-                            if resp.status().is_success() {
-                                if let Ok(health) = resp.json::<HealthResponse>() {
-                                    if health.status == "ok" {
-                                        ready = true;
-                                        break;
+                            let status = resp.status();
+                            tracing::debug!(attempt = i, http_status = %status, "Health check response");
+                            if status.is_success() {
+                                match resp.json::<HealthResponse>() {
+                                    Ok(health) => {
+                                        tracing::debug!(attempt = i, health_status = %health.status, "Health check parsed");
+                                        if health.status == "ok" {
+                                            ready = true;
+                                            break;
+                                        } else {
+                                            last_error = format!("Health status: {}", health.status);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        last_error = format!("Health parse error: {}", e);
+                                        tracing::debug!(attempt = i, error = %e, "Health check parse failed");
                                     }
                                 }
+                            } else {
+                                last_error = format!("HTTP {}", status);
                             }
                         }
                         Err(e) => {
                             last_error = e.to_string();
+                            if i % 10 == 0 {
+                                tracing::debug!(attempt = i, error = %e, "Health check request failed");
+                            }
                         }
                     }
                 }

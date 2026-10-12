@@ -312,6 +312,37 @@ async fn reflect(
     })))
 }
 
+/// Trigger night shift manually (for testing)
+async fn trigger_night_shift(State(state): State<AppState>) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Spawn a thread to run night shift so we don't block the response
+    let db = state.db.clone();
+    
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let scheduler = crate::night::scheduler::NightScheduler::new(db, "0 2 * * *".to_string());
+        match rt.block_on(scheduler.run_now()) {
+            Ok(report) => {
+                tracing::info!(
+                    audited = report.audited,
+                    consolidated = report.consolidated,
+                    models = report.models_built,
+                    repaired = report.repaired,
+                    errors = report.errors.len(),
+                    "Manual night shift complete"
+                );
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Manual night shift failed");
+            }
+        }
+    });
+    
+    Ok(Json(serde_json::json!({
+        "status": "started",
+        "message": "Night shift running in background. Check logs for results."
+    })))
+}
+
 /// Serve embedded UI assets
 async fn serve_ui(Path(path): Path<String>) -> Result<axum::response::Response, StatusCode> {
     let path = if path.is_empty() { "index.html" } else { &path };
@@ -351,5 +382,6 @@ pub fn router(db: Arc<Db>) -> Router {
         .route("/banks/:name/memories/:id", get(get_memory).delete(delete_memory))
         .route("/banks/:name/search", post(search_memories))
         .route("/reflect", post(reflect))
+        .route("/night-shift", post(trigger_night_shift))
         .with_state(state)
 }
