@@ -284,6 +284,7 @@ impl NightScheduler {
     }
 
     /// Audit day's Jev decisions.
+    /// Batches multiple decisions into a single LLM call for efficiency.
     async fn audit_decisions(&self) -> Result<usize> {
         let engine_guard = self.engine.lock().await;
         let engine = engine_guard.as_ref().ok_or_else(|| anyhow::anyhow!("Engine not available"))?;
@@ -291,21 +292,49 @@ impl NightScheduler {
         // Get recent Jev decisions from database
         let decisions = self.db.get_recent_jev_decisions(50)?;
 
-        let mut audited = 0;
-        for decision in decisions {
-            // Skip low-confidence decisions (already flagged)
-            if decision.confidence.unwrap_or(0.0) < 0.5 {
-                continue;
-            }
+        // Filter to medium+ confidence decisions worth auditing
+        let to_audit: Vec<_> = decisions
+            .into_iter()
+            .filter(|d| d.confidence.unwrap_or(0.0) >= 0.5 && d.confidence.unwrap_or(0.0) <= 0.85)
+            .take(10) // Limit to 10 per night shift run
+            .collect();
 
-            let _audit = engine.audit_decision(
-                &decision.input,
-                &decision.output,
-                decision.confidence.unwrap_or(0.0) as f32,
-            )?;
-
-            audited += 1;
+        if to_audit.is_empty() {
+            tracing::debug!("No decisions need auditing");
+            return Ok(0);
         }
+
+        // Batch audit: send all decisions in one prompt
+        let system = "You are auditing memory classification decisions. For each decision below, indicate if the classification is correct (YES/NO) and briefly explain why.";
+        
+        let decisions_text: Vec<String> = to_audit
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                format!(
+                    "{}. Content: {}\n   Classification: {}\n   Confidence: {:.2}",
+                    i + 1,
+                    d.input.chars().take(100).collect::<String>(),
+                    d.output,
+                    d.confidence.unwrap_or(0.0)
+                )
+            })
+            .collect();
+
+        let user = format!(
+            "Decisions to audit:\n{}\n\nFor each, answer: correct? (YES/NO) — brief reason",
+            decisions_text.join("\n\n")
+        );
+
+        let response = engine.chat(system, &user, 1500)?;
+        
+        // Count how many were audited (simplistic — count decisions we sent)
+        let audited = to_audit.len();
+        
+        tracing::debug!(
+            response_preview = %response.chars().take(200).collect::<String>(),
+            "Audit response received"
+        );
 
         Ok(audited)
     }
@@ -315,8 +344,8 @@ impl NightScheduler {
         let engine_guard = self.engine.lock().await;
         let engine = engine_guard.as_ref().ok_or_else(|| anyhow::anyhow!("Engine not available"))?;
 
-        // Get memories ready for consolidation
-        let memories = self.db.get_memories_for_consolidation(100)?;
+        // Get memories ready for consolidation (limit to 30 for reasonable prompt size)
+        let memories = self.db.get_memories_for_consolidation(30)?;
 
         if memories.is_empty() {
             return Ok(0);

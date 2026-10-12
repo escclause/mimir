@@ -319,7 +319,7 @@ async fn trigger_night_shift(State(state): State<AppState>) -> Result<Json<serde
     
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let scheduler = crate::night::scheduler::NightScheduler::new(db, "0 2 * * *".to_string());
+        let scheduler = crate::night::scheduler::NightScheduler::new(db.clone(), "0 2 * * *".to_string());
         match rt.block_on(scheduler.run_now()) {
             Ok(report) => {
                 tracing::info!(
@@ -329,6 +329,20 @@ async fn trigger_night_shift(State(state): State<AppState>) -> Result<Json<serde
                     repaired = report.repaired,
                     errors = report.errors.len(),
                     "Manual night shift complete"
+                );
+                
+                // Log to database
+                let _ = db.log_night_audit(
+                    &chrono::Local::now().format("%Y-%m-%d").to_string(),
+                    report.audited as i64,
+                    0,
+                    report.models_built as i64,
+                    Some(&format!(
+                        "Manual trigger. Consolidated: {}, Repaired: {}, Errors: {}",
+                        report.consolidated,
+                        report.repaired,
+                        report.errors.len()
+                    )),
                 );
             }
             Err(e) => {
