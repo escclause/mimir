@@ -23,6 +23,7 @@ async fn main() -> Result<()> {
     // Parse CLI args
     let args: Vec<String> = std::env::args().collect();
     let rest_only = args.iter().any(|a| a == "--rest-only" || a == "--no-mcp");
+    let install_service = args.iter().any(|a| a == "--install-service");
 
     // Initialize tracing — log to stderr so stdout stays clean for JSON-RPC
     tracing_subscriber::registry()
@@ -34,6 +35,11 @@ async fn main() -> Result<()> {
         .init();
 
     tracing::info!("🧠 Mímir starting...");
+
+    // Handle --install-service flag
+    if install_service {
+        return install_service_interactive();
+    }
 
     // Resolve storage path
     let storage_path = dirs::home_dir()
@@ -97,6 +103,144 @@ async fn main() -> Result<()> {
 
     tracing::info!("Mímir ready — serving MCP over stdio + REST on port {}", rest_port);
     service.waiting().await?;
+
+    Ok(())
+}
+
+/// Interactive service installation
+fn install_service_interactive() -> Result<()> {
+    use std::io::{self, Write};
+
+    println!("🧠 Mímir Service Installation\n");
+    println!("This will install Mímir as a systemd user service.");
+    println!("The service will start automatically on boot and restart on failure.\n");
+
+    // Ask user if they want to proceed
+    print!("Install Mímir as a systemd service? [y/N]: ");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = input.trim().to_lowercase();
+
+    if input != "y" && input != "yes" {
+        println!("Installation cancelled.");
+        return Ok(());
+    }
+
+    // Ask for mode
+    println!("\nSelect mode:");
+    println!("  1. REST-only (Web UI + REST API, no MCP)");
+    println!("  2. MCP + REST (full featured, requires stdio)");
+    print!("Choice [1]: ");
+    io::stdout().flush()?;
+
+    let mut mode_input = String::new();
+    io::stdin().read_line(&mut mode_input)?;
+    let mode = mode_input.trim();
+    let mode = if mode == "2" { "mcp" } else { "rest-only" };
+
+    // Get binary path
+    let binary_path = std::env::current_exe()
+        .context("failed to get current executable path")?;
+    let binary_path = binary_path.to_string_lossy();
+
+    // Create systemd user directory
+    let systemd_dir = dirs::home_dir()
+        .context("failed to resolve home directory")?
+        .join(".config")
+        .join("systemd")
+        .join("user");
+    std::fs::create_dir_all(&systemd_dir)?;
+
+    let service_name = "mimir.service";
+    let service_path = systemd_dir.join(service_name);
+
+    // Check if service already exists
+    if service_path.exists() {
+        print!("Service already exists. Overwrite? [y/N]: ");
+        io::stdout().flush()?;
+        let mut overwrite = String::new();
+        io::stdin().read_line(&mut overwrite)?;
+        let overwrite = overwrite.trim().to_lowercase();
+        if overwrite != "y" && overwrite != "yes" {
+            println!("Installation cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Create service file
+    let exec_start = if mode == "mcp" {
+        format!("{} --mcp", binary_path)
+    } else {
+        format!("{} --rest-only", binary_path)
+    };
+
+    let service_content = format!("[Unit]
+Description=Mímir Memory System
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={}
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=mimir=info
+
+[Install]
+WantedBy=default.target
+", exec_start);
+
+    std::fs::write(&service_path, &service_content)
+        .context("failed to write service file")?;
+
+    println!("\n✅ Service file created: {}", service_path.display());
+    println!("\nTo enable and start the service:");
+    println!("  systemctl --user daemon-reload");
+    println!("  systemctl --user enable {}", service_name);
+    println!("  systemctl --user start {}", service_name);
+    println!("\nTo check status:");
+    println!("  systemctl --user status {}", service_name);
+    println!("\nTo view logs:");
+    println!("  journalctl --user -u {} -f", service_name);
+
+    // Ask if user wants to enable now
+    print!("\nEnable and start service now? [y/N]: ");
+    io::stdout().flush()?;
+
+    let mut enable = String::new();
+    io::stdin().read_line(&mut enable)?;
+    let enable = enable.trim().to_lowercase();
+
+    if enable == "y" || enable == "yes" {
+        // Run systemctl commands
+        let status = std::process::Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .status()?;
+        if !status.success() {
+            eprintln!("Warning: systemctl daemon-reload failed");
+        }
+
+        let status = std::process::Command::new("systemctl")
+            .args(["--user", "enable", service_name])
+            .status()?;
+        if !status.success() {
+            eprintln!("Warning: systemctl enable failed");
+        }
+
+        let status = std::process::Command::new("systemctl")
+            .args(["--user", "start", service_name])
+            .status()?;
+        if !status.success() {
+            eprintln!("Warning: systemctl start failed");
+        } else {
+            println!("\n🚀 Mímir service started!");
+            println!("Access the Web UI at: http://localhost:8083");
+        }
+    } else {
+        println!("\nService installed but not started.");
+        println!("Run the commands above when ready.");
+    }
 
     Ok(())
 }
