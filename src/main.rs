@@ -53,8 +53,9 @@ async fn main() -> Result<()> {
     // Give background D1 engine a moment to start (non-blocking)
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // Start night shift scheduler (runs consolidation tasks)
-    let config = config::Config::default();
+    // Load configuration (defaults → file → env vars)
+    let config = config::Config::load();
+    tracing::info!("\n{}", config.summary());
     let night_scheduler = Arc::new(NightScheduler::new(db.clone(), config.night_schedule.clone()));
     if let Err(e) = night_scheduler.clone().start().await {
         tracing::warn!(error = %e, "Failed to start night shift scheduler");

@@ -45,6 +45,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 config = "0.14"
 dirs = "5"
+toml = "0.8"
 
 # Embedded UI
 rust-embed = { version = "8", features = ["axum"] }
