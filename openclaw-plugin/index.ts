@@ -14,6 +14,8 @@ interface MimirConfig {
   databasePath?: string;
   defaultBank?: string;
   defaultAgent?: string;
+  /** HTTP REST API URL (e.g., http://192.168.2.214:8083). When set, uses HTTP instead of stdio. */
+  restUrl?: string;
 }
 
 class MimirClient {
@@ -32,6 +34,10 @@ class MimirClient {
   constructor(config: MimirConfig) {
     this.config = config;
     this.readyPromise = new Promise((r) => (this.readyResolve = r));
+  }
+
+  private isHttpMode(): boolean {
+    return !!this.config.restUrl;
   }
 
   private resolveBinary(): string {
@@ -53,6 +59,20 @@ class MimirClient {
   }
 
   async start(): Promise<void> {
+    if (this.isHttpMode()) {
+      // HTTP mode — just verify connectivity
+      const url = this.config.restUrl!.replace(/\/$/, "");
+      try {
+        const resp = await fetch(`${url}/health`);
+        if (!resp.ok) throw new Error(`Health check failed: ${resp.status}`);
+        this.ready = true;
+        this.readyResolve();
+      } catch (e) {
+        throw new Error(`Failed to connect to Mímir at ${url}: ${e}`);
+      }
+      return;
+    }
+
     if (this.process) return;
 
     const binary = this.resolveBinary();
@@ -143,6 +163,11 @@ class MimirClient {
 
   async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
     await this.start();
+
+    if (this.isHttpMode()) {
+      return this.callToolHttp(name, args);
+    }
+
     const result = (await this.sendRequest("tools/call", {
       name,
       arguments: args,
@@ -160,6 +185,68 @@ class MimirClient {
       }
     }
     return result;
+  }
+
+  private async callToolHttp(name: string, args: Record<string, unknown>): Promise<unknown> {
+    const url = this.config.restUrl!.replace(/\/$/, "");
+    const bank = (args.bank as string) || this.config.defaultBank || "default_bank";
+
+    switch (name) {
+      case "mimir_retain": {
+        const resp = await fetch(`${url}/banks/${encodeURIComponent(bank)}/memories`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            content: args.content,
+            memory_type: "world_fact",
+            importance: 3,
+            confidence: 1.0,
+            source_agent: args.agent || this.config.defaultAgent || "openclaw",
+            source_context: args.context,
+          }),
+        });
+        if (!resp.ok) throw new Error(`mimir_retain failed: ${resp.status} ${await resp.text()}`);
+        return resp.json();
+      }
+
+      case "mimir_recall": {
+        const limit = (args.limit as number) || 10;
+        const resp = await fetch(`${url}/banks/${encodeURIComponent(bank)}/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: args.query, limit }),
+        });
+        if (!resp.ok) throw new Error(`mimir_recall failed: ${resp.status} ${await resp.text()}`);
+        return resp.json();
+      }
+
+      case "mimir_reflect": {
+        const resp = await fetch(`${url}/reflect`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: args.query, bank }),
+        });
+        if (!resp.ok) throw new Error(`mimir_reflect failed: ${resp.status} ${await resp.text()}`);
+        return resp.json();
+      }
+
+      case "mimir_ask": {
+        // For ask, we search the target agent's bank
+        const targetAgent = args.agent as string;
+        const targetBank = `bank_${targetAgent}`;
+        const limit = (args.limit as number) || 5;
+        const resp = await fetch(`${url}/banks/${encodeURIComponent(targetBank)}/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: args.query, limit }),
+        });
+        if (!resp.ok) throw new Error(`mimir_ask failed: ${resp.status} ${await resp.text()}`);
+        return resp.json();
+      }
+
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
   }
 
   async stop(): Promise<void> {
@@ -198,6 +285,9 @@ export default defineToolPlugin({
     databasePath: Type.Optional(Type.String()),
     defaultBank: Type.Optional(Type.String()),
     defaultAgent: Type.Optional(Type.String()),
+    restUrl: Type.Optional(Type.String({
+      description: "HTTP REST API URL (e.g., http://192.168.2.214:8083). When set, uses HTTP instead of spawning local binary.",
+    })),
   }),
 
   tools: (tool) => [

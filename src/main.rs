@@ -20,6 +20,10 @@ use crate::night::scheduler::NightScheduler;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Parse CLI args
+    let args: Vec<String> = std::env::args().collect();
+    let rest_only = args.iter().any(|a| a == "--rest-only" || a == "--no-mcp");
+
     // Initialize tracing — log to stderr so stdout stays clean for JSON-RPC
     tracing_subscriber::registry()
         .with(
@@ -46,13 +50,6 @@ async fn main() -> Result<()> {
     let _default_bank = db.get_or_create_bank("default_bank", "default")?;
     tracing::info!("default bank ready");
 
-    // Start MCP server over stdio
-    tracing::info!("starting MCP server on stdio");
-    let server = MimirServer::new(db.clone());
-
-    // Give background D1 engine a moment to start (non-blocking)
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
     // Load configuration (defaults → file → env vars)
     let config = config::Config::load();
     tracing::info!("\n{}", config.summary());
@@ -65,9 +62,9 @@ async fn main() -> Result<()> {
     let rest_router = api::rest::router(db.clone());
     let rest_port = config.rest_port;
     tokio::spawn(async move {
-        match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", rest_port)).await {
+        match tokio::net::TcpListener::bind(format!("0.0.0.0:{}", rest_port)).await {
             Ok(listener) => {
-                tracing::info!("REST API listening on http://127.0.0.1:{}", rest_port);
+                tracing::info!("REST API listening on http://0.0.0.0:{}", rest_port);
                 if let Err(e) = axum::serve(listener, rest_router).await {
                     tracing::error!(error = %e, "REST API server failed");
                 }
@@ -77,6 +74,21 @@ async fn main() -> Result<()> {
             }
         }
     });
+
+    if rest_only {
+        tracing::info!("Mímir ready — REST-only mode on port {}", rest_port);
+        // Keep running forever
+        tokio::signal::ctrl_c().await?;
+        tracing::info!("Shutting down Mímir");
+        return Ok(());
+    }
+
+    // Start MCP server over stdio
+    tracing::info!("starting MCP server on stdio");
+    let server = MimirServer::new(db.clone());
+
+    // Give background D1 engine a moment to start (non-blocking)
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let service = server
         .serve(rmcp::transport::stdio())

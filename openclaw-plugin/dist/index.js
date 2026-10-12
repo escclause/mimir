@@ -2631,6 +2631,9 @@ var MimirClient = class {
     this.config = config;
     this.readyPromise = new Promise((r) => this.readyResolve = r);
   }
+  isHttpMode() {
+    return !!this.config.restUrl;
+  }
   resolveBinary() {
     if (this.config.binaryPath && existsSync(this.config.binaryPath)) {
       return this.config.binaryPath;
@@ -2647,6 +2650,18 @@ var MimirClient = class {
     return "mimir";
   }
   async start() {
+    if (this.isHttpMode()) {
+      const url = this.config.restUrl.replace(/\/$/, "");
+      try {
+        const resp = await fetch(`${url}/health`);
+        if (!resp.ok) throw new Error(`Health check failed: ${resp.status}`);
+        this.ready = true;
+        this.readyResolve();
+      } catch (e) {
+        throw new Error(`Failed to connect to M\xEDmir at ${url}: ${e}`);
+      }
+      return;
+    }
     if (this.process) return;
     const binary = this.resolveBinary();
     const args = [];
@@ -2720,6 +2735,9 @@ var MimirClient = class {
   }
   async callTool(name, args) {
     await this.start();
+    if (this.isHttpMode()) {
+      return this.callToolHttp(name, args);
+    }
     const result = await this.sendRequest("tools/call", {
       name,
       arguments: args
@@ -2735,6 +2753,61 @@ var MimirClient = class {
       }
     }
     return result;
+  }
+  async callToolHttp(name, args) {
+    const url = this.config.restUrl.replace(/\/$/, "");
+    const bank = args.bank || this.config.defaultBank || "default_bank";
+    switch (name) {
+      case "mimir_retain": {
+        const resp = await fetch(`${url}/banks/${encodeURIComponent(bank)}/memories`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            content: args.content,
+            memory_type: "world_fact",
+            importance: 3,
+            confidence: 1,
+            source_agent: args.agent || this.config.defaultAgent || "openclaw",
+            source_context: args.context
+          })
+        });
+        if (!resp.ok) throw new Error(`mimir_retain failed: ${resp.status} ${await resp.text()}`);
+        return resp.json();
+      }
+      case "mimir_recall": {
+        const limit = args.limit || 10;
+        const resp = await fetch(`${url}/banks/${encodeURIComponent(bank)}/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: args.query, limit })
+        });
+        if (!resp.ok) throw new Error(`mimir_recall failed: ${resp.status} ${await resp.text()}`);
+        return resp.json();
+      }
+      case "mimir_reflect": {
+        const resp = await fetch(`${url}/reflect`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: args.query, bank })
+        });
+        if (!resp.ok) throw new Error(`mimir_reflect failed: ${resp.status} ${await resp.text()}`);
+        return resp.json();
+      }
+      case "mimir_ask": {
+        const targetAgent = args.agent;
+        const targetBank = `bank_${targetAgent}`;
+        const limit = args.limit || 5;
+        const resp = await fetch(`${url}/banks/${encodeURIComponent(targetBank)}/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: args.query, limit })
+        });
+        if (!resp.ok) throw new Error(`mimir_ask failed: ${resp.status} ${await resp.text()}`);
+        return resp.json();
+      }
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
   }
   async stop() {
     if (this.process) {
@@ -2758,7 +2831,10 @@ var index_default = defineToolPlugin({
     binaryPath: Type.Optional(Type.String()),
     databasePath: Type.Optional(Type.String()),
     defaultBank: Type.Optional(Type.String()),
-    defaultAgent: Type.Optional(Type.String())
+    defaultAgent: Type.Optional(Type.String()),
+    restUrl: Type.Optional(Type.String({
+      description: "HTTP REST API URL (e.g., http://192.168.2.214:8083). When set, uses HTTP instead of spawning local binary."
+    }))
   }),
   tools: (tool) => [
     // ------------------------------------------------------- mimir_retain
