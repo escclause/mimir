@@ -71,6 +71,16 @@ impl Db {
             )?;
         }
 
+        // Rebuild FTS index with Porter stemmer
+        if !applied.contains(&"0002_fts_porter".to_string()) {
+            tracing::info!("applying migration 0002_fts_porter");
+            conn.execute_batch(include_str!("../../migrations/0002_fts_porter.sql"))?;
+            conn.execute(
+                "INSERT INTO _migrations (name) VALUES ('0002_fts_porter')",
+                [],
+            )?;
+        }
+
         Ok(())
     }
 

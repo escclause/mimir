@@ -38,9 +38,11 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
 
 -- Full-text search
 -- Uses internal rowid for join with memories table
+-- Porter tokenizer for stemming (matches 'preferences' → 'prefer')
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content,
-    bank_id UNINDEXED
+    bank_id UNINDEXED,
+    tokenize='porter unicode61'
 );
 
 -- Jev decision log
