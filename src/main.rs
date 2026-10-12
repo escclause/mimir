@@ -64,13 +64,17 @@ async fn main() -> Result<()> {
     let rest_router = api::rest::router(db.clone());
     let rest_port = config.rest_port;
     tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", rest_port))
-            .await
-            .expect("failed to bind REST API port");
-        tracing::info!("REST API listening on http://127.0.0.1:{}", rest_port);
-        axum::serve(listener, rest_router)
-            .await
-            .expect("REST API server failed");
+        match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", rest_port)).await {
+            Ok(listener) => {
+                tracing::info!("REST API listening on http://127.0.0.1:{}", rest_port);
+                if let Err(e) = axum::serve(listener, rest_router).await {
+                    tracing::error!(error = %e, "REST API server failed");
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to bind REST API port {}", rest_port);
+            }
+        }
     });
 
     let service = server

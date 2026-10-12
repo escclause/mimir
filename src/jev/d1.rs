@@ -144,12 +144,19 @@ impl D1Engine {
         }
 
         // Spawn llama-server process
+        let model_str = model_path.to_str().ok_or_else(|| {
+            anyhow::anyhow!("Invalid model path: {}", model_path.display())
+        })?;
+        let mmproj_str = mmproj_path.to_str().ok_or_else(|| {
+            anyhow::anyhow!("Invalid mmproj path: {}", mmproj_path.display())
+        })?;
+
         let mut child = Command::new(&server_binary)
             .args([
                 "--model",
-                model_path.to_str().unwrap(),
+                model_str,
                 "--mmproj",
-                mmproj_path.to_str().unwrap(),
+                mmproj_str,
                 "--port",
                 &port.to_string(),
                 "--host",

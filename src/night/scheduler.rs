@@ -65,12 +65,13 @@ impl CronSchedule {
     }
 
     /// Calculate duration until next run time
-    fn duration_until_next(&self) -> Duration {
+    fn duration_until_next(&self) -> Result<Duration> {
         let now = chrono::Local::now();
         let today = now.date_naive();
 
         let next = today.and_hms_opt(self.hour as u32, self.minute as u32, 0)
-            .unwrap_or_else(|| today.and_hms_opt(0, 0, 0).unwrap());
+            .or_else(|| today.and_hms_opt(0, 0, 0))
+            .ok_or_else(|| anyhow::anyhow!("Invalid time: {}:{}", self.hour, self.minute))?;
 
         let next_dt = if next > now.naive_local() {
             next
@@ -78,7 +79,7 @@ impl CronSchedule {
             // Already passed today, schedule for tomorrow
             (today + chrono::Duration::days(1))
                 .and_hms_opt(self.hour as u32, self.minute as u32, 0)
-                .unwrap()
+                .ok_or_else(|| anyhow::anyhow!("Invalid time: {}:{}", self.hour, self.minute))?
         };
 
         let now_ts = now.timestamp();
@@ -89,7 +90,7 @@ impl CronSchedule {
             .unwrap_or(now_ts + 86400);
 
         let secs = (next_ts - now_ts).max(0) as u64;
-        Duration::from_secs(secs)
+        Ok(Duration::from_secs(secs))
     }
 }
 
@@ -129,7 +130,13 @@ impl NightScheduler {
 
         tokio::spawn(async move {
             loop {
-                let wait = cron.duration_until_next();
+                let wait = match cron.duration_until_next() {
+                    Ok(w) => w,
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to calculate next run time, using 24h fallback");
+                        Duration::from_secs(86400)
+                    }
+                };
                 let wait_hours = wait.as_secs() as f64 / 3600.0;
 
                 tracing::info!(

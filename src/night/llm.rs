@@ -129,10 +129,14 @@ impl NightEngine {
             ));
         }
 
+        let model_str = model_path.to_str().ok_or_else(|| {
+            anyhow::anyhow!("Invalid model path: {}", model_path.display())
+        })?;
+
         let mut child = Command::new(&server_binary)
             .args([
                 "--model",
-                model_path.to_str().unwrap(),
+                model_str,
                 "--port",
                 &port.to_string(),
                 "--host",
