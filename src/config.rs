@@ -24,6 +24,8 @@ pub struct Config {
     pub night_port: u16,
     /// Night shift schedule (cron expression)
     pub night_schedule: String,
+    /// REST API port
+    pub rest_port: u16,
 }
 
 impl Default for Config {
@@ -56,6 +58,7 @@ impl Default for Config {
                 .join("LFM2.5-2.6B-Q4_0.gguf"),
             night_port: 8082,
             night_schedule: "0 2 * * *".to_string(),
+            rest_port: 8083,
         }
     }
 }

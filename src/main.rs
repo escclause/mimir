@@ -60,12 +60,25 @@ async fn main() -> Result<()> {
         tracing::warn!(error = %e, "Failed to start night shift scheduler");
     }
 
+    // Start REST API server
+    let rest_router = api::rest::router(db.clone());
+    let rest_port = config.rest_port;
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", rest_port))
+            .await
+            .expect("failed to bind REST API port");
+        tracing::info!("REST API listening on http://127.0.0.1:{}", rest_port);
+        axum::serve(listener, rest_router)
+            .await
+            .expect("REST API server failed");
+    });
+
     let service = server
         .serve(rmcp::transport::stdio())
         .await
         .context("failed to start MCP server")?;
 
-    tracing::info!("Mímir ready — serving MCP over stdio");
+    tracing::info!("Mímir ready — serving MCP over stdio + REST on port {}", rest_port);
     service.waiting().await?;
 
     Ok(())
