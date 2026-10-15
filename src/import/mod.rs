@@ -364,7 +364,7 @@ pub fn import_openclaw_workspace(
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "md") {
+            if path.extension().is_some_and(|e| e == "md") {
                 let result = import_from_file(
                     db,
                     bank_id,

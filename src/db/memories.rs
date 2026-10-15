@@ -142,12 +142,10 @@ impl Db {
             let mut stmt = conn.prepare(fts_sql)?;
             let rows = stmt.query_map(params![sanitized, bank_id], Memory::from_row);
             if let Ok(rs) = rows {
-                for row in rs {
-                    if let Ok(mem) = row {
-                        // Simple similarity: check if >70% of words overlap
-                        if content_similarity(&content, &mem.content) > 0.7 {
-                            return Ok(Some(mem));
-                        }
+                for row in rs.flatten() {
+                    // Simple similarity: check if >70% of words overlap
+                    if content_similarity(content, &row.content) > 0.7 {
+                        return Ok(Some(row));
                     }
                 }
             }
@@ -308,13 +306,15 @@ impl Db {
             }
         }
 
-        // Update recall stats
-        let now = chrono::Utc::now().to_rfc3339();
-        for mem in &memories {
-            let _ = conn.execute(
-                "UPDATE memories SET last_recalled_at = ?1, recall_count = recall_count + 1 WHERE id = ?2",
-                params![now, mem.id],
-            );
+        // Update recall stats only if we found memories
+        if !memories.is_empty() {
+            let now = chrono::Utc::now().to_rfc3339();
+            for mem in &memories {
+                let _ = conn.execute(
+                    "UPDATE memories SET last_recalled_at = ?1, recall_count = recall_count + 1 WHERE id = ?2",
+                    params![now, mem.id],
+                );
+            }
         }
 
         Ok(memories)
@@ -322,6 +322,11 @@ impl Db {
 
     /// Get recent memories from a bank
     pub fn recent_memories(&self, bank_id: &str, limit: usize) -> Result<Vec<Memory>> {
+        self.recent_memories_with_offset(bank_id, limit, 0)
+    }
+
+    /// Get recent memories from a bank with offset (for pagination)
+    pub fn recent_memories_with_offset(&self, bank_id: &str, limit: usize, offset: usize) -> Result<Vec<Memory>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT rowid, id, bank_id, content, memory_type, importance, confidence,
@@ -330,9 +335,9 @@ impl Db {
              FROM memories
              WHERE bank_id = ?1
              ORDER BY created_at DESC
-             LIMIT ?2"
+             LIMIT ?2 OFFSET ?3"
         )?;
-        let rows = stmt.query_map(params![bank_id, limit as i64], Memory::from_row)?;
+        let rows = stmt.query_map(params![bank_id, limit as i64, offset as i64], Memory::from_row)?;
 
         let mut memories = Vec::new();
         for row in rows {

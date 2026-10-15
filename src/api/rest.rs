@@ -99,14 +99,16 @@ async fn list_memories(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let limit = query.limit.unwrap_or(50);
+    let offset = query.offset.unwrap_or(0);
     let memories = state
         .db
-        .recent_memories(&bank.id, limit)
+        .recent_memories_with_offset(&bank.id, limit, offset)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(serde_json::json!({
         "bank": bank_name,
         "count": memories.len(),
+        "offset": offset,
         "memories": memories
     })))
 }
@@ -159,11 +161,30 @@ async fn store_memory(
     Path(bank_name): Path<String>,
     Json(req): Json<StoreMemoryRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Input validation
+    if req.content.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if req.content.len() > 100_000 {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
     let bank = state
         .db
         .get_bank_by_name(&bank_name)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Permission check: derive agent from request or use "api" default
+    let agent_id = req.source_agent.clone().unwrap_or_else(|| "api".to_string());
+    let can_write = state
+        .db
+        .can_write(&agent_id, &bank.id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if !can_write {
+        return Err(StatusCode::FORBIDDEN);
+    }
 
     // Check for duplicate
     if let Ok(Some(existing)) = state.db.find_duplicate(&bank.id, &req.content) {
@@ -184,7 +205,7 @@ async fn store_memory(
                 memory_type: req.memory_type.unwrap_or_else(|| "world_fact".to_string()),
                 importance: req.importance.unwrap_or(3),
                 confidence: req.confidence.unwrap_or(1.0),
-                source_agent: req.source_agent.unwrap_or_else(|| "api".to_string()),
+                source_agent: agent_id,
                 source_context: req.source_context,
                 provenance: None,
             },
@@ -433,11 +454,11 @@ async fn export_memories(
 
 /// Trigger night shift manually (for testing)
 async fn trigger_night_shift(State(state): State<AppState>) -> Result<Json<serde_json::Value>, StatusCode> {
-    // Spawn a thread to run night shift so we don't block the response
     let db = state.db.clone();
     
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+    // Use tokio::task::spawn_blocking instead of creating a new runtime
+    tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Handle::current();
         let scheduler = crate::night::scheduler::NightScheduler::new(db.clone(), "0 2 * * *".to_string());
         match rt.block_on(scheduler.run_now()) {
             Ok(report) => {
@@ -505,9 +526,8 @@ async fn serve_ui(Path(path): Path<String>) -> Result<axum::response::Response, 
 pub fn router(db: Arc<Db>) -> Router {
     let state = AppState { db };
 
-    Router::new()
-        .route("/", get(|| async { serve_ui(Path("".to_string())).await }))
-        .route("/*path", get(serve_ui))
+    // API routes first (more specific)
+    let api_routes = Router::new()
         .route("/health", get(health))
         .route("/banks", get(list_banks).post(create_bank))
         .route("/banks/:name", get(get_bank))
@@ -518,6 +538,15 @@ pub fn router(db: Arc<Db>) -> Router {
         .route("/banks/:name/import-openclaw", post(import_openclaw_workspace))
         .route("/banks/:name/export", post(export_memories))
         .route("/reflect", post(reflect))
-        .route("/night-shift", post(trigger_night_shift))
+        .route("/night-shift", post(trigger_night_shift));
+
+    // UI routes (catch-all)
+    let ui_routes = Router::new()
+        .route("/", get(|| async { serve_ui(Path("".to_string())).await }))
+        .route("/*path", get(serve_ui));
+
+    Router::new()
+        .merge(api_routes)
+        .merge(ui_routes)
         .with_state(state)
 }

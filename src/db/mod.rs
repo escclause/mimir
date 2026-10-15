@@ -138,11 +138,12 @@ impl Db {
         output: &str,
         confidence: Option<f32>,
         model_used: &str,
+        agent_id: &str,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let input = jev_log::NewDecision {
             decision_type,
-            agent_id: "default",
+            agent_id,
             bank_id: None,
             input_text,
             input_memory_id: memory_id,

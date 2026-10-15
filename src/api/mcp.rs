@@ -23,7 +23,7 @@ use crate::jev::DecisionEngine;
 
 /// Find llama-server binary in common locations.
 /// Prefers official llama.cpp build for D1 model support.
-fn find_llama_server() -> Option<PathBuf> {
+pub fn find_llama_server() -> Option<PathBuf> {
     // Check official build first (required for D1 LFM2.5 architecture)
     let candidates = [
         "/home/glitch/llama.cpp-official/build/bin/llama-server",
@@ -78,6 +78,7 @@ pub struct MimirServer {
 }
 
 /// Configuration for lazy D1 spawn
+#[derive(Debug, Clone)]
 struct D1SpawnConfig {
     model_path: PathBuf,
     mmproj_path: PathBuf,
@@ -97,7 +98,7 @@ impl Clone for MimirServer {
             db: Arc::clone(&self.db),
             engine: Arc::clone(&self.engine),
             peer: None,
-            d1_config: None, // Config not cloned — only original spawns
+            d1_config: self.d1_config.clone(), // Clone config so clones can also spawn D1
         }
     }
 }
@@ -227,7 +228,7 @@ impl MimirServer {
     /// returns immediately with MockEngine. Subsequent requests
     /// use D1 once ready.
     fn maybe_spawn_d1(&self) {
-        // Check if already D1 or spawn in progress
+        // Fast path: check current engine under read lock
         {
             if let Ok(slot) = self.engine.read() {
                 if slot.1 == EngineKind::D1 {
@@ -242,13 +243,13 @@ impl MimirServer {
             None => return,
         };
 
-        // Try to acquire write lock to check state
+        // Acquire write lock to check state and mark spawn in-progress
         let slot = match self.engine.write() {
             Ok(s) => s,
             Err(_) => return,
         };
 
-        // Double-check after acquiring write lock
+        // Double-check after acquiring write lock (another thread may have upgraded)
         if slot.1 == EngineKind::D1 {
             return; // Already D1
         }
@@ -260,8 +261,6 @@ impl MimirServer {
         let port = config.port;
         let engine_slot = Arc::clone(&self.engine);
 
-        // Mark spawn in progress by setting a special flag
-        // We can't easily add a variant to EngineKind, so we log it
         tracing::info!("Lazy spawn: first decision call, starting D1 in background...");
 
         // Drop the write lock before spawning thread
@@ -273,7 +272,10 @@ impl MimirServer {
                 Ok(d1) => {
                     tracing::info!("Lazy spawn: D1 ready, upgrading engine");
                     if let Ok(mut slot) = engine_slot.write() {
-                        *slot = (Arc::new(d1), EngineKind::D1);
+                        // Only upgrade if still Mock (don't overwrite a concurrent upgrade)
+                        if slot.1 != EngineKind::D1 {
+                            *slot = (Arc::new(d1), EngineKind::D1);
+                        }
                     }
                 }
                 Err(e) => {
@@ -396,6 +398,7 @@ impl MimirServer {
             classification.memory_type.as_str(),
             Some(classification.confidence),
             engine_kind.as_str(),
+            &agent_id,
         );
 
         let response = serde_json::json!({
@@ -580,6 +583,7 @@ impl MimirServer {
         #[tool(aggr)] input: AskInput,
     ) -> Result<Content, String> {
         let limit = input.limit.unwrap_or(5);
+        let asking_agent = "default"; // TODO: derive from MCP session context
 
         // Find banks the asking agent can access (own banks + shared banks)
         let banks = self
@@ -605,11 +609,11 @@ impl MimirServer {
         // Search own banks first, then shared banks
         let mut all_results = Vec::new();
 
-        // Search own banks
+        // Search own banks — verify asking agent has read permission
         for bank in &banks {
             let permitted = self
                 .db
-                .can_read(&input.agent, &bank.id)
+                .can_read(asking_agent, &bank.id)
                 .map_err(|e| format!("permission check failed: {}", e))?;
 
             if permitted {
@@ -632,7 +636,7 @@ impl MimirServer {
             }
         }
 
-        // Search shared banks
+        // Search shared banks — always readable
         for bank in shared_banks {
             let memories = self
                 .db

@@ -69,8 +69,8 @@ impl CronSchedule {
         let now = chrono::Local::now();
         let today = now.date_naive();
 
-        let next = today.and_hms_opt(self.hour as u32, self.minute as u32, 0)
-            .or_else(|| today.and_hms_opt(0, 0, 0))
+        let next = today
+            .and_hms_opt(self.hour as u32, self.minute as u32, 0)
             .ok_or_else(|| anyhow::anyhow!("Invalid time: {}:{}", self.hour, self.minute))?;
 
         let next_dt = if next > now.naive_local() {
@@ -269,7 +269,7 @@ impl NightScheduler {
             ));
         }
 
-        let server_binary = find_llama_server().ok_or_else(|| {
+        let server_binary = crate::api::mcp::find_llama_server().ok_or_else(|| {
             anyhow::anyhow!("llama-server binary not found")
         })?;
 
@@ -465,12 +465,17 @@ impl NightScheduler {
         }
 
         // Check for stale memories (not recalled in 90 days)
+        // Parse timestamps for proper comparison instead of string comparison
         let cutoff = chrono::Utc::now() - chrono::Duration::days(90);
-        let cutoff_str = cutoff.to_rfc3339();
 
         for mem in &all_memories {
             if let Some(last_recalled) = &mem.last_recalled_at {
-                if last_recalled < &cutoff_str && mem.importance > 1 {
+                // Parse RFC3339 timestamp for proper comparison
+                let is_stale = chrono::DateTime::parse_from_rfc3339(last_recalled)
+                    .map(|dt| dt < cutoff)
+                    .unwrap_or(false);
+
+                if is_stale && mem.importance > 1 {
                     // Decay stale memory
                     let _ = self.db.update_memory_importance(
                         &mem.id,
@@ -515,30 +520,3 @@ pub struct NightShiftReport {
     pub errors: Vec<String>,
 }
 
-/// Find llama-server binary.
-fn find_llama_server() -> Option<std::path::PathBuf> {
-    let candidates = [
-        "/home/glitch/llama.cpp-official/build/bin/llama-server",
-        "/home/glitch/llama.cpp-turboquant/build/bin/llama-server",
-        "/usr/local/bin/llama-server",
-        "/usr/bin/llama-server",
-    ];
-
-    for path in &candidates {
-        let p = std::path::PathBuf::from(path);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in path_var.split(':') {
-            let p = std::path::PathBuf::from(dir).join("llama-server");
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-
-    None
-}
